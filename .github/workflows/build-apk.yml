@@ -1,0 +1,50 @@
+name: Build CPS (CajitaPaaS) Android APK
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: 3. Configurar Android SDK y Gradle
+        uses: android-actions/setup-android@v3
+
+      - name: 4. Empaquetar Panel Web CPS y Binarios ARM64 dentro de la APK
+        run: |
+          mkdir -p android/app/src/main/assets/public
+          mkdir -p android/app/src/main/assets/scripts
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+
+          # Copiar el Panel Web (index.html, app.js, logo CPS) a los assets de la APK
+          cp -r control-plane/public/* android/app/src/main/assets/public/
+          cp -r scripts/* android/app/src/main/assets/scripts/
+
+          # Descargar binarios estáticos ARM64 oficiales (Cloudflared + BusyBox)
+          curl -L -s https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 \
+            -o android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+          chmod 755 android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+
+      - name: 5. Compilar APK (CajitaPaaS ARM64)
+        working-directory: ./android
+        run: |
+          gradle assembleDebug --no-daemon
+
+      - name: 6. Publicar APK lista para descargar e instalar en el celular
+        uses: actions/upload-artifact@v4
+        with:
+          name: CajitaPaaS-CPS-ARM64-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

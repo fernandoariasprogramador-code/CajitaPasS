@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CajitaPaaS (CPS) · Tu Servidor en el Celu</title>
+  <link rel="icon" type="image/jpeg" href="./assets/cps-logo.jpg" />
+  <style>
+    /* ==========================================================================
+       CAJITAPAAS (CPS) · UI MODERNA, VISUAL E INTUITIVA
+       Estilo gamer/creador oscuro (#0D131A + Azul #1890FF + Menta Neón #00E5A3)
+       Sin jerga pesada: directo, visual y a prueba de errores.
+       ========================================================================== */
+    :root {
+      --bg-dark: #0d131a;
+      --bg-card: #131c27;
+      --bg-card-hover: #182433;
+      --bg-input: #090e14;
+      --border: #223244;
+      --primary-blue: #1890ff;
+      --accent-mint: #00e5a3;
+      --text-main: #f5f9fc;
+      --text-muted: #94a9be;
+      --amber: #ffb300;
+      --amber-bg: #2b1d07;
+      --danger: #ff4d6d;
+      --danger-bg: #2d0c16;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      background-image:
+        radial-gradient(circle at 15% 10%, rgba(24, 144, 255, 0.12), transparent 35%),
+        radial-gradient(circle at 85% 85%, rgba(0, 229, 163, 0.1), transparent 35%);
+      color: var(--text-main);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      padding: 1.25rem 1rem 3rem;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* ==========================================================================
+       HEADER OFICIAL CAJITAPAAS (CPS)
+       ========================================================================== */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1.5rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .brand img {
+      height: 64px;
+      width: 64px;
+      object-fit: cover;
+      border-radius: 16px;
+      border: 2px solid rgba(0, 229, 163, 0.4);
+      box-shadow: 0 0 20px rgba(0, 229, 163, 0.18);
+    }
+
+    .brand-title h1 {
+      font-size: 1.65rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .brand-title h1 span.paas {
+      background: linear-gradient(90deg, var(--primary-blue), var(--accent-mint));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .cps-badge {
+      font-size: 0.75rem;
+      font-weight: 800;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(0, 229, 163, 0.14);
+      color: var(--accent-mint);
+      border: 1px solid rgba(0, 229, 163, 0.4);
+    }
+
+    .brand-subtitle {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* ==========================================================================
+       BOTONES E INPUTS MODERNOS (TOUCH-FRIENDLY)
+       ========================================================================== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.6rem;
+      width: 100%;
+      min-height: 58px;
+      padding: 0.9rem 1.4rem;
+      border: none;
+      border-radius: 14px;
+      font-size: 1.08rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 0.12s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+      color: #071018;
+      background: linear-gradient(90deg, var(--primary-blue), var(--accent-mint));
+      box-shadow: 0 8px 22px rgba(0, 229, 163, 0.22);
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 26px rgba(0, 229, 163, 0.32);
+    }
+
+    .btn:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .btn-giant-upload {
+      min-height: 76px;
+      font-size: 1.22rem;
+      border-radius: 18px;
+    }
+
+    .btn-secondary {
+      background: var(--bg-input);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      border-color: var(--primary-blue);
+      box-shadow: none;
+    }
+
+    .btn-danger {
+      background: rgba(255, 77, 109, 0.14);
+      color: #ff8fa3;
+      border: 1px solid rgba(255, 77, 109, 0.45);
+      box-shadow: none;
+    }
+
+    .btn-amber {
+      background: var(--amber);
+      color: #1f1200;
+      box-shadow: 0 8px 22px rgba(255, 179, 0, 0.25);
+    }
+
+    .btn-small {
+      width: auto;
+      min-height: 42px;
+      padding: 0.5rem 1rem;
+      font-size: 0.9rem;
+      border-radius: 10px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 0.4rem;
+      margin-top: 0.95rem;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      min-height: 52px;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      border: 1.5px solid var(--border);
+      background: var(--bg-input);
+      color: var(--text-main);
+      font-size: 1rem;
+      font-family: inherit;
+      transition: border-color 0.15s ease;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent-mint);
+    }
+
+    textarea {
+      font-family: 'Consolas', monospace;
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    /* ==========================================================================
+       PANTALLA 1: LOGIN MODERNO
+       ========================================================================== */
+    .login-wrapper {
+      max-width: 480px;
+      margin: 2.5rem auto;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 1.6rem;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+    }
+
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 800;
+      margin-bottom: 0.35rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .card-desc {
+      color: var(--text-muted);
+      font-size: 0.92rem;
+      margin-bottom: 1.1rem;
+    }
+
+    .error-banner {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger);
+      color: #ffb3c1;
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+
+    /* ==========================================================================
+       BANNER DE ESTADO GLOBAL (SEMÁFORO NEÓN)
+       ========================================================================== */
+    .status-hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1.2rem;
+      padding: 1.4rem 1.6rem;
+      border-radius: 20px;
+      margin-bottom: 1.5rem;
+      border: 2px solid rgba(0, 229, 163, 0.5);
+      background: linear-gradient(135deg, rgba(0, 229, 163, 0.14), rgba(24, 144, 255, 0.08));
+    }
+
+    .status-hero.is-offline {
+      border-color: var(--danger);
+      background: linear-gradient(135deg, rgba(255, 77, 109, 0.16), rgba(19, 28, 39, 0.9));
+    }
+
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 1.1rem;
+    }
+
+    .pulse-orb {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--accent-mint);
+      color: #062117;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.75rem;
+      font-weight: 900;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 8px rgba(0, 229, 163, 0.2);
+      animation: neonPulse 2.2s infinite;
+    }
+
+    .status-hero.is-offline .pulse-orb {
+      background: var(--danger);
+      color: #fff;
+      box-shadow: 0 0 0 8px rgba(255, 77, 109, 0.2);
+      animation: none;
+    }
+
+    @keyframes neonPulse {
+      0% { box-shadow: 0 0 0 0 rgba(0, 229, 163, 0.5); }
+      70% { box-shadow: 0 0 0 14px rgba(0, 229, 163, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(0, 229, 163, 0); }
+    }
+
+    .status-text h2 {
+      font-size: 1.35rem;
+      font-weight: 800;
+    }
+
+    .status-text p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* ==========================================================================
+       NAVEGACIÓN POR PESTAÑAS
+       ========================================================================== */
+    .tabs {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      flex: 1;
+      min-width: 210px;
+      min-height: 54px;
+      padding: 0.75rem 1.2rem;
+      border-radius: 14px;
+      font-size: 1rem;
+      font-weight: 800;
+      background: var(--bg-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .tab-btn.active {
+      color: #071018;
+      background: linear-gradient(90deg, var(--primary-blue), var(--accent-mint));
+      border-color: transparent;
+      box-shadow: 0 6px 20px rgba(24, 144, 255, 0.25);
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+
+    /* Zona visual para subir archivo .ZIP */
+    .zip-dropzone {
+      border: 2px dashed rgba(0, 229, 163, 0.45);
+      background: rgba(0, 229, 163, 0.05);
+      border-radius: 16px;
+      padding: 1.3rem 1rem;
+      text-align: center;
+      margin-top: 0.9rem;
+      margin-bottom: 1rem;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .zip-dropzone:hover {
+      background: rgba(0, 229, 163, 0.1);
+      border-color: var(--accent-mint);
+    }
+
+    .zip-dropzone-title {
+      font-weight: 800;
+      font-size: 1.05rem;
+      color: var(--accent-mint);
+    }
+
+    .zip-dropzone-sub {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+
+    /* Lista de Apps Activas */
+    .app-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-top: 0.85rem;
+    }
+
+    .app-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+      padding: 1rem 1.15rem;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+    }
+
+    .app-item-info {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .live-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent-mint);
+      box-shadow: 0 0 10px var(--accent-mint);
+    }
+
+    .app-item-name {
+      font-weight: 800;
+      font-size: 1.05rem;
+    }
+
+    .app-item-meta {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* Switch para DBeaver */
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.15rem;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin-bottom: 1rem;
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 32px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: #263545;
+      transition: 0.25s;
+      border-radius: 32px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 24px;
+      width: 24px;
+      left: 4px;
+      bottom: 4px;
+      background-color: #fff;
+      transition: 0.25s;
+      border-radius: 50%;
+    }
+
+    .toggle-switch input:checked + .slider {
+      background: linear-gradient(90deg, var(--primary-blue), var(--accent-mint));
+    }
+
+    .toggle-switch input:checked + .slider:before {
+      transform: translateX(28px);
+    }
+
+    .dbeaver-info {
+      margin-top: 1rem;
+      padding: 1rem 1.15rem;
+      border-radius: 14px;
+      background: rgba(0, 229, 163, 0.08);
+      border: 1px dashed rgba(0, 229, 163, 0.45);
+      font-size: 0.92rem;
+      line-height: 1.65;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      color: var(--accent-mint);
+      font-weight: 800;
+    }
+
+    /* ==========================================================================
+       MODALES DE PANTALLA COMPLETA (ACTUALIZANDO / ÉXITO / AUTO-PROTECCIÓN)
+       ========================================================================== */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(9, 14, 20, 0.92);
+      backdrop-filter: blur(6px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+
+    .modal-box {
+      width: 100%;
+      max-width: 520px;
+      background: var(--bg-card);
+      border: 2px solid var(--border);
+      border-radius: 24px;
+      padding: 2.2rem 1.6rem;
+      text-align: center;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75);
+    }
+
+    .modal-box.is-success {
+      border-color: var(--accent-mint);
+      background: linear-gradient(180deg, #0f2922 0%, #131c27 100%);
+    }
+
+    .modal-box.is-warning {
+      border-color: var(--amber);
+      background: linear-gradient(180deg, var(--amber-bg) 0%, #131c27 100%);
+    }
+
+    .spinner-neon {
+      width: 84px;
+      height: 84px;
+      border: 8px solid rgba(255, 255, 255, 0.1);
+      border-top-color: var(--accent-mint);
+      border-right-color: var(--primary-blue);
+      border-radius: 50%;
+      margin: 0 auto 1.4rem;
+      animation: spin 0.95s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .modal-icon {
+      width: 88px;
+      height: 88px;
+      border-radius: 50%;
+      margin: 0 auto 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.8rem;
+      font-weight: 900;
+    }
+
+    .is-success .modal-icon {
+      background: var(--accent-mint);
+      color: #062117;
+      box-shadow: 0 0 28px rgba(0, 229, 163, 0.4);
+    }
+
+    .is-warning .modal-icon {
+      background: var(--amber);
+      color: #241600;
+      box-shadow: 0 0 28px rgba(255, 179, 0, 0.35);
+    }
+
+    .modal-title {
+      font-size: 1.6rem;
+      font-weight: 800;
+      margin-bottom: 0.65rem;
+    }
+
+    .modal-desc {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      margin-bottom: 1.35rem;
+    }
+
+    .modal-pill {
+      display: inline-block;
+      padding: 0.75rem 1.1rem;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      font-weight: 700;
+      font-size: 0.95rem;
+      margin-bottom: 1.4rem;
+    }
+
+    /* Confeti */
+    .confetti-container {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 10000;
+    }
+
+    .confetti-piece {
+      position: absolute;
+      top: -20px;
+      width: 12px;
+      height: 22px;
+      border-radius: 4px;
+      animation: confettiFall linear forwards;
+    }
+
+    @keyframes confettiFall {
+      0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(105vh) rotate(720deg); opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- HEADER OFICIAL CAJITAPAAS -->
+    <header>
+      <div class="brand">
+        <img src="./assets/cps-logo.jpg" alt="CPS CajitaPaaS Logo" />
+        <div class="brand-title">
+          <h1>
+            Cajita<span class="paas">PaaS</span>
+            <span class="cps-badge">CPS v1.0</span>
+          </h1>
+          <p class="brand-subtitle">Tu propio servidor de apps y bases de datos corriendo en Android</p>
+        </div>
+      </div>
+
+      <button id="btnLogout" type="button" class="btn btn-secondary btn-small hidden">
+        Cerrar sesión
+      </button>
+    </header>
+
+    <!-- ======================================================================
+         VISTA 1: ONBOARDING (PRIMERA VEZ) Y LOGIN HABITUAL
+         ====================================================================== -->
+    <main id="viewLogin" class="login-wrapper">
+      <!-- TARJETA A: CONFIGURACIÓN INICIAL (SOLO LA PRIMERA VEZ QUE SE ABRE LA APP) -->
+      <div id="cardFirstTimeSetup" class="card hidden" style="border-color: rgba(0, 229, 163, 0.55);">
+        <h2 class="card-title">✨ ¡Bienvenido a tu CajitaPaaS!</h2>
+        <p class="card-desc">
+          Como es la primera vez que entrás después de instalar la app, <strong>creá tu propia contraseña de administrador</strong>. La usarás siempre que vuelvas a ingresar.
+        </p>
+
+        <div id="setupError" class="error-banner hidden" role="alert"></div>
+
+        <form id="setupForm" novalidate>
+          <label for="inputSetupPass">1. Creá tu Contraseña de Administrador (mín. 6 caracteres)</label>
+          <input
+            type="password"
+            id="inputSetupPass"
+            placeholder="Escribí tu nueva contraseña..."
+            autocomplete="new-password"
+            required
+          />
+
+          <label for="inputSetupConfirm">2. Repetí tu Contraseña para confirmar</label>
+          <input
+            type="password"
+            id="inputSetupConfirm"
+            placeholder="Volvé a escribir tu contraseña..."
+            autocomplete="new-password"
+            required
+          />
+
+          <div style="margin-top: 0.65rem; display: flex; justify-content: flex-end;">
+            <button type="button" id="btnToggleSetupPass" class="btn btn-secondary btn-small" style="font-size: 0.82rem;">
+              👁️ Mostrar contraseñas
+            </button>
+          </div>
+
+          <button type="submit" id="btnSetupSubmit" class="btn btn-giant-upload" style="margin-top: 1.2rem;">
+            🔒 Guardar mi Contraseña y Entrar
+          </button>
+        </form>
+      </div>
+
+      <!-- TARJETA B: LOGIN HABITUAL (CUANDO YA TIENE CONTRASEÑA CREADA) -->
+      <div id="cardRegularLogin" class="card">
+        <h2 class="card-title">🔐 Entrar a tu CajitaPaaS</h2>
+        <p class="card-desc">
+          Ingresá la contraseña de administrador que configuraste para gestionar tus sistemas y bases de datos.
+        </p>
+
+        <div id="loginError" class="error-banner hidden" role="alert">
+          Ups, esa contraseña no es correcta. Probá de nuevo.
+        </div>
+
+        <form id="loginForm" novalidate>
+          <label for="inputSecretKey">Tu Contraseña de Administrador</label>
+          <input
+            type="password"
+            id="inputSecretKey"
+            placeholder="Ingresá tu contraseña..."
+            autocomplete="current-password"
+            required
+          />
+
+          <div style="margin-top: 0.65rem; display: flex; justify-content: flex-end;">
+            <button type="button" id="btnTogglePass" class="btn btn-secondary btn-small" style="font-size: 0.82rem;">
+              👁️ Ver contraseña
+            </button>
+          </div>
+
+          <button type="submit" id="btnLoginSubmit" class="btn btn-giant-upload" style="margin-top: 1.2rem;">
+            🚀 Entrar al Panel
+          </button>
+        </form>
+      </div>
+    </main>
+
+    <!-- ======================================================================
+         VISTA 2: DASHBOARD PRINCIPAL CAJITAPAAS
+         ====================================================================== -->
+    <main id="viewDashboard" class="hidden">
+      <!-- Indicador Gigante de Estado -->
+      <section id="statusHero" class="status-hero" aria-live="polite">
+        <div class="status-left">
+          <div id="statusOrb" class="pulse-orb">✔</div>
+          <div class="status-text">
+            <h2 id="statusTitle">CajitaPaaS está: FUNCIONANDO DE DIEZ</h2>
+            <p id="statusSubtitle">Tu servidor en el celu está online y listo para recibir actualizaciones sin cortes.</p>
+          </div>
+        </div>
+        <button id="btnRefreshAll" type="button" class="btn btn-secondary btn-small">
+          🔄 Actualizar estado
+        </button>
+      </section>
+
+      <!-- Barra de URL Pública del Túnel (Siempre visible arriba) -->
+      <div class="card" style="margin-bottom: 1.5rem; padding: 1.1rem 1.4rem; border-color: rgba(24, 144, 255, 0.5); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+        <div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;">
+            🌐 URL Pública de tu Celular en Internet (Túnel Cloudflare Activo)
+          </div>
+          <div style="margin-top: 0.25rem; display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;">
+            <a id="topTunnelUrl" href="https://cajita-pampa-8421.trycloudflare.com" target="_blank" rel="noopener" style="font-family: monospace; font-size: 1.15rem; font-weight: 800; color: var(--accent-mint); text-decoration: none;">
+              https://cajita-pampa-8421.trycloudflare.com
+            </a>
+            <span id="topTunnelBadge" class="cps-badge" style="margin-left: 0;">MODO GRATIS (Auto-URL)</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <button id="btnCopyTunnelUrl" type="button" class="btn btn-secondary btn-small">
+            📋 Copiar Link Público
+          </button>
+          <button id="btnGoTunnelTab" type="button" class="btn btn-secondary btn-small">
+            ⚙️ Configurar Túnel
+          </button>
+        </div>
+      </div>
+
+      <!-- Pestañas de Navegación -->
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="tab-apps" type="button">
+          🚀 1. Subir o Actualizar mis Apps
+        </button>
+        <button class="tab-btn" data-tab="tab-db" type="button">
+          🗄️ 2. Mis Bases de Datos y Modo PC
+        </button>
+        <button class="tab-btn" data-tab="tab-tunnel" type="button">
+          🌐 3. Túnel e Internet (URL Pública)
+        </button>
+      </div>
+
+      <!-- PESTAÑA 1: SUBIR APPS (.ZIP O GITHUB) -->
+      <section id="tab-apps" class="tab-panel active">
+        <div class="grid">
+          <!-- Opción A: Subir archivo .ZIP -->
+          <div class="card" style="border-color: rgba(0, 229, 163, 0.45);">
+            <h3 class="card-title">📦 Subir App o Sistema en .ZIP</h3>
+            <p class="card-desc">
+              Podés subir tantos sistemas como quieras (por ejemplo, el <strong>Frontend</strong> en <code>/</code> y el <strong>Backend</strong> en <code>/api/*</code>). Cada uno corre en su propio puerto sin pisar a los demás.
+            </p>
+
+            <label for="zipAppName">1. Identificador de este servicio (sin espacios)</label>
+            <input type="text" id="zipAppName" value="tienda-front" placeholder="ej: tienda-front, tienda-backend, crm-api" />
+
+            <div class="grid" style="margin-bottom: 0; gap: 0.75rem;">
+              <div>
+                <label for="zipAppRole">2. ¿Qué parte del sistema es?</label>
+                <select id="zipAppRole">
+                  <option value="frontend">🖥️ Frontend (Web / React / Vue / HTML)</option>
+                  <option value="backend">⚙️ Backend / API (Node / Go / Python / .NET)</option>
+                  <option value="fullstack">🚀 Sistema Completo (Fullstack)</option>
+                </select>
+              </div>
+              <div>
+                <label for="zipRoutePath">3. Ruta Web Pública (Caddy)</label>
+                <input type="text" id="zipRoutePath" value="/" placeholder="ej: / ó /api/* ó /crm/*" />
+              </div>
+            </div>
+
+            <input type="file" id="zipFileInput" accept=".zip,application/zip" class="hidden" />
+
+            <div id="zipDropzone" class="zip-dropzone" role="button" tabindex="0">
+              <div id="zipChosenText" class="zip-dropzone-title">📂 Tocá acá para elegir tu archivo .ZIP</div>
+              <div class="zip-dropzone-sub">Máximo 100 MB · Asigna puertos Blue/Green automáticamente</div>
+            </div>
+
+            <button id="btnDeployZip" type="button" class="btn btn-giant-upload">
+              ⚡ Subir y Publicar Servicio
+            </button>
+          </div>
+
+          <!-- Opción B: Traer directo desde GitHub -->
+          <div class="card">
+            <h3 class="card-title">🌐 Traer directo desde GitHub</h3>
+            <p class="card-desc">
+              Pegá el link de tu repositorio (Frontend o Backend) y CajitaPaaS le asigna su propio par de puertos y su ruta web.
+            </p>
+
+            <label for="gitAppName">1. Identificador de este servicio (sin espacios)</label>
+            <input type="text" id="gitAppName" placeholder="ej: tienda-backend, auth-service" />
+
+            <div class="grid" style="margin-bottom: 0; gap: 0.75rem;">
+              <div>
+                <label for="gitAppRole">2. ¿Qué parte del sistema es?</label>
+                <select id="gitAppRole">
+                  <option value="backend" selected>⚙️ Backend / API (Node / Go / Python / .NET)</option>
+                  <option value="frontend">🖥️ Frontend (Web / React / Vue / HTML)</option>
+                  <option value="fullstack">🚀 Sistema Completo (Fullstack)</option>
+                </select>
+              </div>
+              <div>
+                <label for="gitRoutePath">3. Ruta Web Pública (Caddy)</label>
+                <input type="text" id="gitRoutePath" value="/api/*" placeholder="ej: /api/* ó / ó /auth/*" />
+              </div>
+            </div>
+
+            <label for="gitRepoUrl">4. Link de tu proyecto en GitHub (.git)</label>
+            <input type="url" id="gitRepoUrl" placeholder="https://github.com/tu-usuario/tu-proyecto.git" />
+
+            <label for="gitBranch">Rama (por defecto: main)</label>
+            <input type="text" id="gitBranch" value="main" />
+
+            <button id="btnDeployGit" type="button" class="btn" style="margin-top: 1.25rem;">
+              🚀 Descargar y Publicar Servicio
+            </button>
+          </div>
+        </div>
+
+        <!-- Lista de Apps Corriendo -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+            <div>
+              <h3 class="card-title">🟢 Tus Apps Encendidas</h3>
+              <p class="card-desc" style="margin-bottom: 0;">Proyectos que están corriendo ahora mismo en tu celular.</p>
+            </div>
+            <button id="btnReloadProjects" type="button" class="btn btn-secondary btn-small">
+              Refrescar lista
+            </button>
+          </div>
+
+          <div id="appsListContainer" class="app-list">
+            <div class="app-item">
+              <span style="color: var(--text-muted);">Cargando tus apps activas...</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PESTAÑA 2: BASES DE DATOS Y PUENTE PARA PC (DBEAVER) -->
+      <section id="tab-db" class="tab-panel">
+        <!-- Switch para conectar desde la PC -->
+        <div class="card" style="margin-bottom: 1.25rem; border-color: rgba(24, 144, 255, 0.45);">
+          <h3 class="card-title">💻 Conectar desde mi PC (DBeaver / MySQL Workbench)</h3>
+          <p class="card-desc">
+            Por seguridad, tu base de datos está cerrada al exterior. Si querés verla o editarla cómodo desde tu compu, prendé este interruptor y se apagará solo cuando cierres esta pestaña.
+          </p>
+
+          <div class="switch-row">
+            <div>
+              <strong id="bridgeStateTitle" style="font-size: 1.05rem;">Modo PC: APAGADO (Protegido)</strong>
+              <div id="bridgeTimerText" style="font-size: 0.85rem; color: var(--text-muted);">
+                Nadie desde afuera puede conectarse ahora mismo.
+              </div>
+            </div>
+            <label class="toggle-switch" title="Prender o apagar conexión desde PC">
+              <input type="checkbox" id="dbeaverSwitch" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="grid" style="margin-bottom: 0;">
+            <div>
+              <label for="bridgeModeSelect">¿Cuánto tiempo dejarlo abierto?</label>
+              <select id="bridgeModeSelect">
+                <option value="session">Mientras tenga abierta esta página web</option>
+                <option value="ttl:15">Solo por 15 minutos</option>
+                <option value="ttl:30">Solo por 30 minutos</option>
+                <option value="ttl:60">Solo por 1 hora</option>
+              </select>
+            </div>
+            <div>
+              <label for="bridgeRestrictIp">¿Quién puede entrar?</label>
+              <select id="bridgeRestrictIp">
+                <option value="false">Cualquier compu de mi red Wi-Fi</option>
+                <option value="true">Solamente la IP de esta compu</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="dbeaverConnectionBox" class="dbeaver-info hidden">
+            <div><strong>⚡ ¡Listo! Copiá estos datos en DBeaver en tu PC:</strong></div>
+            <div>• Servidor (Host): <strong id="dbHostVal" style="color: var(--accent-mint);">-</strong></div>
+            <div>• Puerto (Port): <strong id="dbPortVal" style="color: var(--accent-mint);">13306</strong></div>
+            <div>• Compus permitidas: <span id="dbAllowedIpVal">Tu red Wi-Fi</span></div>
+            <div>• Conexiones abiertas ahora: <span id="dbActiveConnsVal">0</span></div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h3 class="card-title">➕ Crear Nueva Base de Datos</h3>
+            <p class="card-desc">Creá un espacio nuevo para guardar usuarios, partidas o datos de tu app.</p>
+
+            <label for="newDbName">Nombre de la Base de Datos</label>
+            <input type="text" id="newDbName" placeholder="ej: mi_juego_db" />
+
+            <label for="newDbUser">Usuario para tu App (opcional)</label>
+            <input type="text" id="newDbUser" placeholder="ej: jugador_admin" />
+
+            <label for="newDbPass">Contraseña (mínimo 8 letras o números)</label>
+            <input type="password" id="newDbPass" placeholder="••••••••" />
+
+            <button id="btnCreateDb" type="button" class="btn" style="margin-top: 1.2rem;">
+              ✨ Crear Base de Datos
+            </button>
+          </div>
+
+          <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <h3 class="card-title">📂 Tus Bases Guardadas</h3>
+              <button id="btnReloadDbs" type="button" class="btn btn-secondary btn-small">Refrescar</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th>Tipo</th>
+                  <th>Tablas creadas</th>
+                </tr>
+              </thead>
+              <tbody id="dbsTableBody">
+                <tr><td colspan="3" style="color: var(--text-muted);">Cargando bases de datos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Explorador rápido de datos -->
+        <div class="card">
+          <h3 class="card-title">🔍 Ver o Consultar Datos Rápido (SQL)</h3>
+          <label for="sqlTargetDb">Elegí la Base de Datos</label>
+          <input type="text" id="sqlTargetDb" value="cajitapaas" />
+          <label for="sqlEditor">Consulta</label>
+          <textarea id="sqlEditor">SELECT * FROM deployments_audit ORDER BY id DESC LIMIT 10;</textarea>
+          <button id="btnRunSql" type="button" class="btn" style="margin-top: 1rem;">
+            ▶️ Ver Resultados
+          </button>
+          <div id="sqlTableWrapper" style="overflow-x: auto; margin-top: 1rem;"></div>
+        </div>
+      </section>
+
+      <!-- PESTAÑA 3: CONFIGURACIÓN DEL TÚNEL Y URL PÚBLICA -->
+      <section id="tab-tunnel" class="tab-panel">
+        <div class="card" style="margin-bottom: 1.25rem; border-color: rgba(0, 229, 163, 0.45);">
+          <h3 class="card-title">🌐 Tus Direcciones de Acceso (Local e Internet)</h3>
+          <p class="card-desc">
+            CajitaPaaS salta el bloqueo CGNAT de tu operadora móvil o Wi-Fi usando <strong>Cloudflare Tunnel</strong>. Aquí ves las URLs exactas que el túnel genera automáticamente.
+          </p>
+
+          <div class="dbeaver-info" style="margin-top: 0.5rem;">
+            <div>• <strong>URL Pública de tus Apps (Frontend / API):</strong> <span id="tunnelPublicUrlVal" style="color: var(--accent-mint); font-weight: 800;">https://cajita-pampa-8421.trycloudflare.com</span></div>
+            <div>• <strong>URL Pública de este Panel Web (remoto):</strong> <span id="tunnelAdminUrlVal" style="color: #52a9ff; font-weight: 700;">https://cajita-pampa-8421.trycloudflare.com/_control/</span></div>
+            <div>• <strong>URL dentro de tu Wi-Fi (Red Local):</strong> <span id="tunnelLanUrlVal">http://192.168.1.85:8080</span></div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <!-- Modo 1: Quick Tunnel Gratuito -->
+          <div class="card">
+            <h3 class="card-title">⚡ Opción 1: Túnel Rápido Gratis (Sin cuenta)</h3>
+            <p class="card-desc">
+              Ideal para empezar o hacer pruebas rápidas. Al encender el celular, <code>cloudflared</code> pide un subdominio gratuito <code>*.trycloudflare.com</code> y CajitaPaaS lo lee del registro y te lo muestra acá arriba automáticamente.
+            </p>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+              <em>Nota: En el modo gratis, si reinicias el túnel o el celular, Cloudflare te asigna un nombre aleatorio nuevo.</em>
+            </p>
+            <button id="btnRegenerateQuickTunnel" type="button" class="btn">
+              🔄 Generar Nuevo Link Gratis (*.trycloudflare.com)
+            </button>
+          </div>
+
+          <!-- Modo 2: Token de Cloudflare (Dominio Fijo Permanente) -->
+          <div class="card" style="border-color: rgba(24, 144, 255, 0.45);">
+            <h3 class="card-title">🔒 Opción 2: Mi Propio Dominio Fijo (Token Cloudflare)</h3>
+            <p class="card-desc">
+              Si quieres que tu URL <strong>nunca cambie</strong> (ej. <code>https://sistema.miempresa.com</code>), crea un túnel en el panel gratuito de <strong>Cloudflare Zero Trust</strong> y pega tu Token aquí.
+            </p>
+
+            <label for="inputCustomDomain">Tu Dominio Configurado en Cloudflare</label>
+            <input type="text" id="inputCustomDomain" placeholder="ej: app.midominio.com" />
+
+            <label for="inputTunnelToken">Token del Túnel (CLOUDFLARE_TUNNEL_TOKEN)</label>
+            <input type="password" id="inputTunnelToken" placeholder="eyJhIjoi..." />
+
+            <button id="btnSaveCustomTunnel" type="button" class="btn" style="margin-top: 1.2rem;">
+              💾 Guardar Token y Conectar Dominio Fijo
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ========================================================================
+       MODAL BLOQUEANTE DE ACTUALIZACIÓN (EVITA DOBLE CLIC)
+       ======================================================================== -->
+  <div id="modalUpdating" class="overlay hidden" role="dialog" aria-modal="true" aria-busy="true">
+    <div class="modal-box">
+      <div class="spinner-neon" aria-hidden="true"></div>
+      <h2 class="modal-title">Actualizando el sistema...</h2>
+      <p class="modal-desc">
+        Estamos preparando y probando tu nueva versión en segundo plano.
+      </p>
+      <div class="modal-pill">
+        ✋ No cierres esta pantalla.<br />
+        Tu versión actual sigue online sin caerse mientras tanto.
+      </div>
+      <p id="updatingAppLabel" style="font-size: 0.9rem; color: var(--accent-mint); font-weight: 700;"></p>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL DE RESPUESTA VISUAL (ÉXITO VERDE / AUTO-PROTECCIÓN NARANJA SUAVE)
+       ======================================================================== -->
+  <div id="modalResult" class="overlay hidden" role="alertdialog" aria-modal="true">
+    <div id="resultModalBox" class="modal-box is-success">
+      <div id="resultModalIcon" class="modal-icon">✔</div>
+      <h2 id="resultModalTitle" class="modal-title">¡Sistema actualizado con éxito!</h2>
+      <p id="resultModalDesc" class="modal-desc">
+        La versión nueva pasó todas las pruebas y ya está online.
+      </p>
+      <div id="resultModalPill" class="modal-pill">
+        Todo listo y funcionando sin cortes.
+      </div>
+      <button id="btnCloseModalResult" type="button" class="btn">
+        🙌 ¡Genial, volver al panel!
+      </button>
+    </div>
+  </div>
+
+  <div id="confettiContainer" class="confetti-container" aria-hidden="true"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

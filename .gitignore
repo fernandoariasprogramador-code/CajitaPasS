@@ -1,0 +1,9 @@
+node_modules/
+.env
+.admin-auth.json
+.preview-admin-auth.json
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+

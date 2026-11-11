@@ -1,0 +1,26 @@
+{
+  "name": "cajitapaas-control-plane",
+  "version": "1.0.0",
+  "description": "Control Plane seguro con soporte Blue/Green Zero-Downtime para CajitaPaaS Android ARM64",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.12.0",
+    "pm2": "^5.4.3",
+    "simple-git": "^3.27.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+

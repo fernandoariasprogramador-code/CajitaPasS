@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Paleta oficial extraída del logo CPS (CajitaPaaS) -->
+    <color name="cps_bg_dark">#0D131A</color>
+    <color name="cps_surface">#141E28</color>
+    <color name="cps_primary_blue">#1890FF</color>
+    <color name="cps_accent_mint">#00E5A3</color>
+    <color name="cps_text_white">#F5F9FC</color>
+    <color name="cps_text_muted">#8DA2B5</color>
+</resources>
+
