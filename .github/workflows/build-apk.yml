@@ -8,6 +8,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     runs-on: ubuntu-24.04
@@ -55,3 +58,14 @@ jobs:
           name: CajitaPaaS-CPS-ARM64-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: 7. Publicar enlace de descarga directa (.apk) en GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk CajitaPaaS-CPS-ARM64.apk
+          gh release delete v1.0.0-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create v1.0.0-latest CajitaPaaS-CPS-ARM64.apk \
+            --title "CPS (CajitaPaaS) Android APK — Descarga Directa" \
+            --notes "Instalador oficial APK de CPS (CajitaPaaS) para teléfonos Android (ARM64)." \
+            --latest
