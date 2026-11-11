@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Fondo oscuro oficial CPS (#0D131A) -->
+    <path
+        android:fillColor="#0D131A"
+        android:pathData="M0,0h24v24h-24z" />
+    <!-- Cubo flotante superior (Verde Menta #00E5A3) -->
+    <path
+        android:fillColor="#00E5A3"
+        android:pathData="M12,3.5L9,5.2L12,6.9L15,5.2L12,3.5ZM9,5.8V9L11.6,10.5V7.3L9,5.8ZM15,5.8L12.4,7.3V10.5L15,9V5.8Z" />
+    <!-- Caja isométrica abierta CPS (Azul Eléctrico #1890FF) -->
+    <path
+        android:fillColor="#1890FF"
+        android:pathData="M5,10.2L12,14.2L19,10.2L16.8,8.5L12,11.2L7.2,8.5L5,10.2ZM6,11.8V18L11.5,21V14.8L6,11.8ZM18,11.8L12.5,14.8V21L18,18V11.8Z" />
+</vector>
+
