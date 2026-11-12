@@ -33,13 +33,36 @@ class PaaSRuntimeService : Service() {
     private var runtimeProcess: Process? = null
     private var cloudflaredProcess: Process? = null
     private var embeddedServer: EmbeddedControlPlaneServer? = null
+    private var networkFailoverManager: NetworkFailoverManager? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Inicializando motor PaaS..."))
         acquireHardwareLocks()
-        embeddedServer = EmbeddedControlPlaneServer(applicationContext, 4000).also {
+        networkFailoverManager = NetworkFailoverManager(
+            context = applicationContext,
+            externalScope = serviceScope,
+            onStateChanged = { state ->
+                when (state) {
+                    NetworkFailoverManager.FailoverState.DISABLED ->
+                        updateNotification("Supervivencia Wi-Fi desactivada")
+                    NetworkFailoverManager.FailoverState.NORMAL_WIFI_STA ->
+                        updateNotification("Conectado al router Wi-Fi local")
+                    NetworkFailoverManager.FailoverState.FAILOVER_SOFTAP_ACTIVE ->
+                        updateNotification("Modo Emergencia: Zona Wi-Fi activa")
+                    NetworkFailoverManager.FailoverState.PROBING_ROUTER_FAILBACK ->
+                        updateNotification("Sondeando retorno del router Wi-Fi...")
+                }
+            }
+        ).also {
+            it.startMonitoring()
+        }
+        embeddedServer = EmbeddedControlPlaneServer(
+            context = applicationContext,
+            port = 4000,
+            failoverManager = networkFailoverManager
+        ).also {
             it.start()
         }
         serviceScope.launch {
@@ -201,6 +224,7 @@ class PaaSRuntimeService : Service() {
     }
 
     override fun onDestroy() {
+        networkFailoverManager?.stopMonitoring()
         serviceJob.cancel()
         embeddedServer?.stop()
         cloudflaredProcess?.destroy()

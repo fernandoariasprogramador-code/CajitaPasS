@@ -53,6 +53,14 @@ let tunnelState = {
   customDomain: null
 };
 
+let failoverState = {
+  enabled: false,
+  pollIntervalMinutes: 10,
+  reconnectWindowSeconds: 30,
+  state: 'DISABLED',
+  wifiConnected: true
+};
+
 let activeSlots = {
   'portal-clientes': {
     appRole: 'frontend',
@@ -345,6 +353,36 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/v1/tunnel/status' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(tunnelState));
+  }
+
+  if (url.pathname === '/api/v1/network/failover/status' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ failover: failoverState }));
+  }
+
+  if (url.pathname === '/api/v1/network/failover/toggle' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const payload = JSON.parse(body || '{}');
+      if (typeof payload.enabled === 'boolean') {
+        failoverState.enabled = payload.enabled;
+        failoverState.state = payload.enabled ? 'NORMAL_WIFI_STA' : 'DISABLED';
+      }
+      if (payload.pollIntervalMinutes !== undefined) {
+        failoverState.pollIntervalMinutes = Number(payload.pollIntervalMinutes) || 10;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          message: failoverState.enabled
+            ? 'Supervivencia Wi-Fi ACTIVADA'
+            : 'Supervivencia Wi-Fi DESACTIVADA',
+          failover: failoverState
+        })
+      );
+    });
+    return;
   }
 
   if (url.pathname === '/api/v1/tunnel/config' && req.method === 'POST') {

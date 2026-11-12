@@ -1014,6 +1014,35 @@ const tunnelState = {
   status: 'starting'
 };
 
+const networkFailoverState = {
+  enabled: false,
+  pollIntervalMinutes: 10,
+  reconnectWindowSeconds: 30,
+  state: 'DISABLED',
+  wifiConnected: true
+};
+
+app.get('/api/v1/network/failover/status', requireStrictAuth, (_req, res) => {
+  return res.json({ failover: networkFailoverState });
+});
+
+app.post('/api/v1/network/failover/toggle', strictDeployLimiter, requireStrictAuth, (req, res) => {
+  const { enabled, pollIntervalMinutes } = req.body || {};
+  if (typeof enabled === 'boolean') {
+    networkFailoverState.enabled = enabled;
+    networkFailoverState.state = enabled ? 'NORMAL_WIFI_STA' : 'DISABLED';
+  }
+  if (pollIntervalMinutes !== undefined) {
+    networkFailoverState.pollIntervalMinutes = Math.min(Math.max(Number(pollIntervalMinutes) || 10, 1), 120);
+  }
+  return res.json({
+    message: networkFailoverState.enabled
+      ? 'Supervivencia Wi-Fi (Failover/Failback) ACTIVADA.'
+      : 'Supervivencia Wi-Fi (Failover/Failback) DESACTIVADA.',
+    failover: networkFailoverState
+  });
+});
+
 /**
  * Lee el log de cloudflared para extraer la URL *.trycloudflare.com generada
  */

@@ -806,7 +806,7 @@
           🗄️ 2. Mis Bases de Datos y Modo PC
         </button>
         <button class="tab-btn" data-tab="tab-tunnel" type="button">
-          🌐 3. Túnel e Internet (URL Pública)
+          🌐 3. Red, Túnel y Supervivencia Wi-Fi
         </button>
       </div>
 
@@ -1010,8 +1010,52 @@
         </div>
       </section>
 
-      <!-- PESTAÑA 3: CONFIGURACIÓN DEL TÚNEL Y URL PÚBLICA -->
+      <!-- PESTAÑA 3: CONFIGURACIÓN DEL TÚNEL, RED Y SUPERVIVENCIA WI-FI -->
       <section id="tab-tunnel" class="tab-panel">
+        <!-- Tarjeta de Supervivencia de Red (Failover Hotspot / Failback Wi-Fi Root) -->
+        <div class="card" style="margin-bottom: 1.25rem; border-color: rgba(0, 229, 163, 0.55);">
+          <h3 class="card-title">📡 Supervivencia de Red Wi-Fi (Failover a Hotspot / Failback Root)</h3>
+          <p class="card-desc">
+            Si el router Wi-Fi del local se apaga o se corta, el celular enciende automáticamente su propia <strong>Zona Wi-Fi (Hotspot)</strong> vía Root para que no pierdas conexión local. Cada cierto tiempo, apaga el Hotspot unos segundos, busca si volvió el router y se reconecta solo (ideal para equipos de antena única como Moto G8).
+          </p>
+
+          <div class="switch-row">
+            <div>
+              <strong id="failoverStateTitle" style="font-size: 1.05rem; color: #f5f9fc;">
+                Supervivencia Wi-Fi: DESACTIVADA
+              </strong>
+              <div id="failoverStateSubtitle" style="font-size: 0.85rem; color: var(--text-muted);">
+                El celular no encenderá la Zona Wi-Fi automáticamente si se corta el router.
+              </div>
+            </div>
+            <label class="toggle-switch" title="Habilitar o deshabilitar Supervivencia de Red (Failover/Failback)">
+              <input type="checkbox" id="failoverSwitch" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="grid" style="margin-bottom: 0;">
+            <div>
+              <label for="failoverIntervalSelect">⏱️ Intervalo de sondeo del router (Modo Ciego Single-Radio)</label>
+              <select id="failoverIntervalSelect">
+                <option value="5">Cada 5 minutos (sondeo rápido)</option>
+                <option value="10" selected>Cada 10 minutos (recomendado)</option>
+                <option value="15">Cada 15 minutos</option>
+                <option value="30">Cada 30 minutos</option>
+              </select>
+            </div>
+            <div>
+              <label>🔍 Estado actual de la radio Wi-Fi</label>
+              <div
+                id="failoverRadioBadge"
+                style="min-height: 52px; padding: 0.75rem 1rem; border-radius: 12px; border: 1.5px solid var(--border); background: var(--bg-input); display: flex; align-items: center; font-weight: 700; color: var(--text-muted);"
+              >
+                ⚪ Monitoreo automático apagado
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom: 1.25rem; border-color: rgba(0, 229, 163, 0.45);">
           <h3 class="card-title">🌐 Tus Direcciones de Acceso (Local e Internet)</h3>
           <p class="card-desc">

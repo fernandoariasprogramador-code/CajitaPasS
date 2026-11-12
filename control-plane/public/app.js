@@ -220,6 +220,7 @@ function syncAllData() {
   loadDatabases();
   fetchBridgeStatus();
   fetchTunnelStatus();
+  fetchFailoverStatus();
 }
 
 // Cambio de pestañas (Mis Apps vs Mis Bases de Datos)
@@ -1093,6 +1094,111 @@ if (btnSaveCustomTunnel) {
       btnSaveCustomTunnel.textContent = '💾 Guardar Token y Conectar Dominio Fijo';
     }
   });
+}
+
+// ============================================================================
+// 8.5 SUPERVIVENCIA DE RED WI-FI (FAILOVER A HOTSPOT / FAILBACK A ROUTER)
+// ============================================================================
+
+const failoverSwitch = document.getElementById('failoverSwitch');
+const failoverIntervalSelect = document.getElementById('failoverIntervalSelect');
+const failoverStateTitle = document.getElementById('failoverStateTitle');
+const failoverStateSubtitle = document.getElementById('failoverStateSubtitle');
+const failoverRadioBadge = document.getElementById('failoverRadioBadge');
+
+function renderFailoverStatus(payload) {
+  const info = payload && payload.failover ? payload.failover : payload;
+  if (!info || !failoverSwitch) return;
+
+  const enabled = Boolean(info.enabled);
+  const pollMinutes = Number(info.pollIntervalMinutes || 10);
+  const state = String(info.state || (enabled ? 'NORMAL_WIFI_STA' : 'DISABLED'));
+
+  failoverSwitch.checked = enabled;
+  if (failoverIntervalSelect) {
+    const valStr = String(pollMinutes);
+    if ([...failoverIntervalSelect.options].some((o) => o.value === valStr)) {
+      failoverIntervalSelect.value = valStr;
+    }
+  }
+
+  if (!enabled || state === 'DISABLED') {
+    if (failoverStateTitle) {
+      failoverStateTitle.textContent = 'Supervivencia Wi-Fi: DESACTIVADA';
+      failoverStateTitle.style.color = '#f5f9fc';
+    }
+    if (failoverStateSubtitle) {
+      failoverStateSubtitle.textContent =
+        'El celular no encenderá la Zona Wi-Fi automáticamente si se corta el router.';
+    }
+    if (failoverRadioBadge) {
+      failoverRadioBadge.textContent = '⚪ Monitoreo automático apagado';
+      failoverRadioBadge.style.color = 'var(--text-muted)';
+    }
+    return;
+  }
+
+  if (failoverStateTitle) {
+    failoverStateTitle.textContent = 'Supervivencia Wi-Fi: ACTIVADA (Auto-Hotspot Root)';
+    failoverStateTitle.style.color = '#00e5a3';
+  }
+  if (failoverStateSubtitle) {
+    failoverStateSubtitle.textContent = `Sondeo en Modo Ciego cada ${pollMinutes} min (ventana de reconexión: ${
+      info.reconnectWindowSeconds || 30
+    }s).`;
+  }
+
+  if (failoverRadioBadge) {
+    if (state === 'FAILOVER_SOFTAP_ACTIVE') {
+      failoverRadioBadge.textContent = '🟠 MODO EMERGENCIA: Emitiendo Zona Wi-Fi (Hotspot Activo)';
+      failoverRadioBadge.style.color = 'var(--amber)';
+    } else if (state === 'PROBING_ROUTER_FAILBACK') {
+      failoverRadioBadge.textContent = '🔵 SONDEANDO ROUTER: Buscando red Wi-Fi del local (30s)...';
+      failoverRadioBadge.style.color = '#52a9ff';
+    } else {
+      failoverRadioBadge.textContent = '🟢 Conectado al Router Wi-Fi (Modo Normal STA)';
+      failoverRadioBadge.style.color = 'var(--accent-mint)';
+    }
+  }
+}
+
+async function fetchFailoverStatus() {
+  if (!getToken()) return;
+  try {
+    const res = await fetch('./api/v1/network/failover/status', { headers: authHeaders() });
+    if (res.ok) {
+      renderFailoverStatus(await res.json());
+    }
+  } catch (_e) {}
+}
+
+async function pushFailoverConfig() {
+  if (!failoverSwitch) return;
+  const enabled = failoverSwitch.checked;
+  const pollIntervalMinutes = failoverIntervalSelect ? Number(failoverIntervalSelect.value || 10) : 10;
+
+  try {
+    const res = await fetch('./api/v1/network/failover/toggle', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled, pollIntervalMinutes })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      renderFailoverStatus(data);
+    } else {
+      failoverSwitch.checked = !enabled;
+    }
+  } catch (_err) {
+    failoverSwitch.checked = !enabled;
+  }
+}
+
+if (failoverSwitch) {
+  failoverSwitch.addEventListener('change', pushFailoverConfig);
+}
+if (failoverIntervalSelect) {
+  failoverIntervalSelect.addEventListener('change', pushFailoverConfig);
 }
 
 // ============================================================================

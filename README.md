@@ -2,12 +2,10 @@
   <img src="assets/branding/cps-logo.jpg" alt="CPS - CajitaPaaS Logo" width="420" />
 </p>
 
-
 <h1 align="center">📦 CPS (CajitaPaaS)</h1>
 <p align="center">
   <b>Convierte cualquier teléfono Android en tu propio servidor de Internet gratis y sin complicaciones.</b>
 </p>
-
 
 <p align="center">
   <a href="https://github.com/fernandoariasprogramador-code/CajitaPasS/releases/latest/download/CajitaPaaS-CPS-ARM64.apk">
@@ -19,16 +17,13 @@
   </a>
 </p>
 
-
 ---
-
 
 ## 🤔 ¿Qué es esto? (Explicado fácil y sin palabras raras)
 
-
 Imagina que creaste una **página web**, una **app para tus amigos**, un **bot de Discord** o una **base de datos** para un proyecto del colegio. Normalmente, para que otras personas puedan entrar desde sus casas por Internet, tendrías que **alquilar una computadora en la nube** (un "servidor") y pagar todos los meses en dólares.
 
-  **¿Y si pudieras usar ese celular Android que tienes guardado en un cajón como si fuera un servidor profesional?** 📱⚡
+**¿Y si pudieras usar ese celular Android que tienes guardado en un cajón como si fuera un servidor profesional?** 📱⚡
 
 Eso es **CPS (`CajitaPaaS`)**: una aplicación que instalas en tu teléfono Android y que, por dentro, arma automáticamente una "cajita mágica" capaz de:
 
@@ -36,6 +31,7 @@ Eso es **CPS (`CajitaPaaS`)**: una aplicación que instalas en tu teléfono Andr
 2. 🔄 **Actualizar sin que nada se caiga (Sistema Azul/Verde)**: Si subes una versión nueva de tu página y tiene un error, nadie se queda sin servicio. La app prepara la versión nueva al lado de la anterior y cambia el tráfico en un parpadeo.
 3. 🗄️ **Guardar datos de verdad**: Trae su propia base de datos lista para usar y un botón para conectarte desde tu compu cuando quieras ver o editar la información.
 4. 🔋 **No se duerme al apagar la pantalla**: Aunque bloquees el celular para no gastar batería en la pantalla, el servidor sigue encendido 24/7 conectado al Wi-Fi.
+5. 📡 **Supervivencia de Red Wi-Fi (Opcional en Modo Root)**: Si el router Wi-Fi de tu casa o local se apaga, el celular puede encender su propia **Zona Wi-Fi (Hotspot)** automáticamente para que nadie pierda conexión local, y volver a conectarse solo cuando el router regrese _(viene deshabilitado por defecto y puedes activarlo con un clic desde el Panel Web)_.
 
 ---
 
@@ -74,12 +70,18 @@ Si más adelante quieres saber cómo funciona el motor por debajo, **CPS (`Cajit
   - **Modo Con Root (Avanzado)**: Si detecta acceso Root y soporte en el chip, activa contenedores reales con aislamiento `cgroups` y `Docker`.
 - **Salida a Internet Segura**: Combina **Caddy Server** + **Cloudflare Tunnels (`cloudflared`)** integrado dentro de la APK para crear enlaces HTTPS públicos sin abrir puertos en el módem.
 - **Puente Seguro para Base de Datos**: Permite conectar programas de escritorio como **DBeaver** a la base de datos del celular solo mientras tú lo autorices con un temporizador automático.
+- **Supervivencia de Red Wi-Fi (Failover a SoftAP / Failback a Router STA)**:
+  - **Deshabilitado por defecto**: Se activa o desactiva bajo demanda desde la pestaña **🌐 3. Red, Túnel y Supervivencia Wi-Fi** del Panel Web.
+  - **Conmutación Root Dinámica por SDK**: En Android 11+ (`API 30+`) utiliza `cmd tethering start-tethering 0` / `stop-tethering 0`; en Android 10 e inferiores (`API 29-`) inyecta transacciones Binder mediante `service call connectivity`.
+  - **Sondeo en Modo Ciego (Single-Radio Polling)**: Diseñado para hardware con una sola antena (`wlan0`, ej. Moto G8) que no soporta concurrencia AP+STA. Cada `X` minutos configurables (5, 10, 15 o 30 min), apaga temporalmente el Hotspot, enciende el receptor Wi-Fi durante 30 segundos para verificar si volvió el router y, si aún no responde, re-levanta la Zona Wi-Fi de emergencia.
 
 ### Estructura del Proyecto
 
-- [`android/app/src/main/AndroidManifest.xml`](android/app/src/main/AndroidManifest.xml): Permisos de servidor en segundo plano (`ForegroundService`, `WAKE_LOCK`) y extracción de binarios ARM64 (`extractNativeLibs="true"`).
+- [`android/app/src/main/AndroidManifest.xml`](android/app/src/main/AndroidManifest.xml): Permisos de servidor en segundo plano (`ForegroundService`, `WAKE_LOCK`), control de red/Wi-Fi (`ACCESS_NETWORK_STATE`, `CHANGE_WIFI_STATE`, `NEARBY_WIFI_DEVICES`) y extracción de binarios ARM64 (`extractNativeLibs="true"`).
 - [`android/app/src/main/java/com/cajitapaas/ui/MainActivity.kt`](android/app/src/main/java/com/cajitapaas/ui/MainActivity.kt): Pantalla principal de la app que enciende el servidor y abre el Panel Web integrado.
 - [`android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt): Servidor HTTP nativo en Kotlin (puerto `4000`) que sirve el panel administrativo y la API dentro del teléfono.
-- [`android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt`](android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt): Servicio persistente con `WakeLock` de CPU, `WifiLock` de baja latencia y túnel Cloudflare integrado.
+- [`android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt`](android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt): Servicio persistente con `WakeLock` de CPU, `WifiLock` de baja latencia, supervisión de red y túnel Cloudflare integrado.
+- [`android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt`](android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt): Gestor de Failover/Failback de red con `ConnectivityManager.NetworkCallback` y corrutina de sondeo para dispositivos de antena única.
+- [`android/app/src/main/java/com/cajitapaas/core/RootShellUtils.kt`](android/app/src/main/java/com/cajitapaas/core/RootShellUtils.kt): Utilidad segura basada en `ProcessBuilder` para ejecutar comandos `su` capturando `stdout` y `stderr` de forma asíncrona con timeout.
 - [`android/app/src/main/java/com/cajitapaas/core/RootDetector.kt`](android/app/src/main/java/com/cajitapaas/core/RootDetector.kt): Detector automático del modo del teléfono (Normal vs Root).
-- [`control-plane/public/index.html`](control-plane/public/index.html) y [`control-plane/server.js`](control-plane/server.js): Interfaz visual y motor de despliegues Blue/Green sin caídas.
+- [`control-plane/public/index.html`](control-plane/public/index.html) y [`control-plane/server.js`](control-plane/server.js): Interfaz visual, control de Supervivencia Wi-Fi y motor de despliegues Blue/Green sin caídas.

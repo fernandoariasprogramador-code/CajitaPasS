@@ -24,7 +24,8 @@ import kotlin.concurrent.thread
  */
 class EmbeddedControlPlaneServer(
     private val context: Context,
-    private val port: Int = 4000
+    private val port: Int = 4000,
+    var failoverManager: NetworkFailoverManager? = null
 ) {
     companion object {
         private const val TAG = "CPSHttpServer"
@@ -233,7 +234,54 @@ class EmbeddedControlPlaneServer(
             return sendJson(out, 200, JSONObject().put("databases", dbs).toString())
         }
 
+        if (path == "/api/v1/network/failover/status" && method == "GET") {
+            return sendJson(out, 200, JSONObject().put("failover", buildFailoverJson()).toString())
+        }
+
+        if (path == "/api/v1/network/failover/toggle" && method == "POST") {
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val currentEnabled = failoverManager?.isEnabled() ?: prefs.getBoolean("network_failover_enabled", false)
+            val currentMinutes = failoverManager?.getPollIntervalMinutes() ?: prefs.getInt("network_failover_poll_minutes", 10)
+            val enabled = json.optBoolean("enabled", currentEnabled)
+            val pollMinutes = json.optInt("pollIntervalMinutes", currentMinutes).coerceIn(1, 120)
+
+            failoverManager?.setConfig(enabled, pollMinutes) ?: run {
+                prefs.edit()
+                    .putBoolean("network_failover_enabled", enabled)
+                    .putInt("network_failover_poll_minutes", pollMinutes)
+                    .apply()
+            }
+
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put(
+                        "message",
+                        if (enabled) "Supervivencia Wi-Fi (Failover/Failback) ACTIVADA."
+                        else "Supervivencia Wi-Fi (Failover/Failback) DESACTIVADA."
+                    )
+                    .put("failover", buildFailoverJson())
+                    .toString()
+            )
+        }
+
         return sendJson(out, 200, JSONObject().put("status", "ok").toString())
+    }
+
+    private fun buildFailoverJson(): JSONObject {
+        val mgr = failoverManager
+        val enabled = mgr?.isEnabled() ?: prefs.getBoolean("network_failover_enabled", false)
+        val pollMinutes = mgr?.getPollIntervalMinutes() ?: prefs.getInt("network_failover_poll_minutes", 10)
+        val stateName = mgr?.currentState?.name ?: if (enabled) "NORMAL_WIFI_STA" else "DISABLED"
+        val wifiConnected = mgr?.isWifiCurrentlyConnected() ?: true
+
+        return JSONObject()
+            .put("enabled", enabled)
+            .put("pollIntervalMinutes", pollMinutes)
+            .put("reconnectWindowSeconds", 30)
+            .put("state", stateName)
+            .put("wifiConnected", wifiConnected)
     }
 
     private fun buildBridgeJson(): JSONObject {
