@@ -39,6 +39,9 @@ let bridgeState = {
   mode: 'session',
   host: '192.168.1.85',
   port: 13306,
+  database: 'cajitapaas',
+  user: 'cajita_admin',
+  password: 'cajitapaas2026',
   allowedIp: null,
   remainingSeconds: null,
   activeConnections: 0
@@ -49,7 +52,10 @@ let tunnelState = {
   status: 'online',
   publicUrl: 'https://cajita-pampa-8421.trycloudflare.com',
   adminUrl: 'https://cajita-pampa-8421.trycloudflare.com/_control/',
-  lanUrl: 'http://192.168.1.85:8080',
+  lanIp: '192.168.1.85',
+  lanPort: PORT,
+  lanUrl: `http://192.168.1.85:${PORT}`,
+  lanAdminUrl: `http://192.168.1.85:${PORT}`,
   customDomain: null
 };
 
@@ -61,31 +67,11 @@ let failoverState = {
   wifiConnected: true
 };
 
-let activeSlots = {
-  'portal-clientes': {
-    appRole: 'frontend',
-    routePath: '/',
-    bluePort: 3001,
-    greenPort: 3002,
-    activeColor: 'blue',
-    activePort: 3001
-  },
-  'api-pagos': {
-    appRole: 'backend',
-    routePath: '/api/*',
-    bluePort: 3003,
-    greenPort: 3004,
-    activeColor: 'green',
-    activePort: 3004
-  }
-};
+let activeSlots = {};
 
-let pm2Processes = [
-  { name: 'portal-clientes-blue', pid: 5109, status: 'online', cpu: 1.2, memoryMb: 48 },
-  { name: 'api-pagos-green', pid: 4821, status: 'online', cpu: 3.4, memoryMb: 64 }
-];
+let pm2Processes = [];
 
-let nextFreeBasePort = 3005;
+let nextFreeBasePort = 3001;
 
 let databases = [
   { name: 'cajitapaas', isSystem: false, tables: ['deployments_audit', 'api_keys'] },
@@ -328,7 +314,10 @@ const server = http.createServer((req, res) => {
         mode: payload.mode || 'session',
         host: '192.168.1.85',
         port: 13306,
-        allowedIp: payload.restrictToMyIp ? '192.168.1.40 (Tu PC)' : null,
+        database: 'cajitapaas',
+        user: 'cajita_admin',
+        password: 'cajitapaas2026',
+        allowedIp: payload.restrictToMyIp ? '192.168.1.40 (Tu PC)' : 'Cualquier PC de tu red Wi-Fi',
         remainingSeconds: payload.mode === 'ttl' ? (payload.ttlMinutes || 15) * 60 : 45,
         activeConnections: payload.enabled ? 1 : 0
       };

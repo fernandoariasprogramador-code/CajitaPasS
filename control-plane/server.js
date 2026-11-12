@@ -941,6 +941,9 @@ function getBridgeStatusPayload() {
     mode: dbeaverBridge.mode,
     host: getDeviceLanIp(),
     port: DBEAVER_BRIDGE_PORT,
+    database: process.env.DB_NAME || 'cajitapaas',
+    user: process.env.DB_USER || 'cajita_admin',
+    password: process.env.DB_PASSWORD || 'super_secret_mariadb_user_pwd_2026',
     allowedIp: dbeaverBridge.allowedIp,
     remainingSeconds,
     activeConnections: Math.floor(dbeaverBridge.sockets.size / 2)
@@ -1116,8 +1119,10 @@ app.get('/api/v1/tunnel/status', requireStrictAuth, async (_req, res) => {
     status: tunnelState.publicUrl ? 'online' : tunnelState.status,
     publicUrl: tunnelState.publicUrl,
     adminUrl: tunnelState.publicUrl ? `${tunnelState.publicUrl}/_control/` : null,
-    lanUrl: `http://${lanIp}:8080`,
-    lanAdminUrl: `http://${lanIp}:8080/_control/`,
+    lanIp,
+    lanPort: PORT,
+    lanUrl: `http://${lanIp}:${PORT}`,
+    lanAdminUrl: `http://${lanIp}:${PORT}`,
     customDomain: tunnelState.customDomain || null
   });
 });
@@ -1264,9 +1269,10 @@ async function bootstrap() {
     console.warn('[BOOTSTRAP] MariaDB aún inicializando o tabla pendiente:', err.message);
   }
 
-  // Escucha exclusivamente en 127.0.0.1 para impedir acceso directo saltándose Caddy
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[CONTROL-PLANE] Escuchando de forma segura en http://127.0.0.1:${PORT}`);
+  // Escucha en 0.0.0.0 para permitir acceso desde cualquier PC de la red interna Wi-Fi
+  app.listen(PORT, '0.0.0.0', () => {
+    const lanIp = getDeviceLanIp();
+    console.log(`[CONTROL-PLANE] Escuchando en red interna: http://${lanIp}:${PORT}`);
   });
 }
 

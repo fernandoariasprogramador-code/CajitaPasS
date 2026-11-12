@@ -774,26 +774,53 @@
         </button>
       </section>
 
-      <!-- Barra de URL Pública del Túnel (Siempre visible arriba) -->
-      <div class="card" style="margin-bottom: 1.5rem; padding: 1.1rem 1.4rem; border-color: rgba(24, 144, 255, 0.5); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-        <div>
-          <div style="font-size: 0.82rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;">
-            🌐 URL Pública de tu Celular en Internet (Túnel Cloudflare Activo)
+      <!-- Barra de Acceso en Red Interna Wi-Fi (IP + Puerto) y URL Pública del Túnel -->
+      <div class="grid" style="margin-bottom: 1.5rem;">
+        <!-- Tarjeta 1: Red Interna Wi-Fi (IP y Puerto para abrir desde la PC) -->
+        <div class="card" style="padding: 1.1rem 1.4rem; border-color: rgba(0, 229, 163, 0.6); display: flex; flex-direction: column; justify-content: space-between; gap: 0.85rem;">
+          <div>
+            <div style="font-size: 0.82rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;">
+              🏠 Configurar desde tu PC en la Red Interna (Wi-Fi)
+            </div>
+            <div style="margin-top: 0.35rem; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+              <a id="topLanUrl" href="http://192.168.1.85:4000" target="_blank" rel="noopener" style="font-family: monospace; font-size: 1.2rem; font-weight: 800; color: var(--accent-mint); text-decoration: none;">
+                http://192.168.1.85:4000
+              </a>
+              <span class="cps-badge" style="margin-left: 0;">RED LOCAL LAN</span>
+            </div>
+            <div style="margin-top: 0.35rem; font-size: 0.9rem; color: var(--text-muted);">
+              IP del Celular: <strong id="topLanIpVal" style="color: var(--text-main);">Detectando...</strong> ·
+              Puerto: <strong id="topLanPortVal" style="color: var(--accent-mint);">4000</strong>
+            </div>
           </div>
-          <div style="margin-top: 0.25rem; display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;">
-            <a id="topTunnelUrl" href="https://cajita-pampa-8421.trycloudflare.com" target="_blank" rel="noopener" style="font-family: monospace; font-size: 1.15rem; font-weight: 800; color: var(--accent-mint); text-decoration: none;">
-              https://cajita-pampa-8421.trycloudflare.com
-            </a>
-            <span id="topTunnelBadge" class="cps-badge" style="margin-left: 0;">MODO GRATIS (Auto-URL)</span>
+          <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+            <button id="btnCopyLanUrl" type="button" class="btn btn-secondary btn-small">
+              📋 Copiar IP:Puerto Local
+            </button>
           </div>
         </div>
-        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
-          <button id="btnCopyTunnelUrl" type="button" class="btn btn-secondary btn-small">
-            📋 Copiar Link Público
-          </button>
-          <button id="btnGoTunnelTab" type="button" class="btn btn-secondary btn-small">
-            ⚙️ Configurar Túnel
-          </button>
+
+        <!-- Tarjeta 2: URL Pública en Internet (Túnel Cloudflare) -->
+        <div class="card" style="padding: 1.1rem 1.4rem; border-color: rgba(24, 144, 255, 0.5); display: flex; flex-direction: column; justify-content: space-between; gap: 0.85rem;">
+          <div>
+            <div style="font-size: 0.82rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;">
+              🌐 URL Pública de tu Celular en Internet (Túnel Cloudflare)
+            </div>
+            <div style="margin-top: 0.35rem; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+              <a id="topTunnelUrl" href="#" target="_blank" rel="noopener" style="font-family: monospace; font-size: 1.12rem; font-weight: 800; color: #52a9ff; text-decoration: none;">
+                Cargando túnel...
+              </a>
+              <span id="topTunnelBadge" class="cps-badge" style="margin-left: 0;">MODO GRATIS (Auto-URL)</span>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+            <button id="btnCopyTunnelUrl" type="button" class="btn btn-secondary btn-small">
+              📋 Copiar Link Público
+            </button>
+            <button id="btnGoTunnelTab" type="button" class="btn btn-secondary btn-small">
+              ⚙️ Configurar Red y Túnel
+            </button>
+          </div>
         </div>
       </div>
 
@@ -949,10 +976,13 @@
           </div>
 
           <div id="dbeaverConnectionBox" class="dbeaver-info hidden">
-            <div><strong>⚡ ¡Listo! Copiá estos datos en DBeaver en tu PC:</strong></div>
-            <div>• Servidor (Host): <strong id="dbHostVal" style="color: var(--accent-mint);">-</strong></div>
-            <div>• Puerto (Port): <strong id="dbPortVal" style="color: var(--accent-mint);">13306</strong></div>
-            <div>• Compus permitidas: <span id="dbAllowedIpVal">Tu red Wi-Fi</span></div>
+            <div style="margin-bottom: 0.4rem;"><strong>⚡ ¡Listo! Copiá estos datos en DBeaver / MySQL Workbench (Driver: MariaDB o MySQL):</strong></div>
+            <div>• Servidor (Host / IP del Celu): <strong id="dbHostVal" style="color: var(--accent-mint); font-family: monospace;">-</strong></div>
+            <div>• Puerto (Port): <strong id="dbPortVal" style="color: var(--accent-mint); font-family: monospace;">13306</strong></div>
+            <div>• Base de Datos (Database): <strong id="dbNameVal" style="color: var(--accent-mint); font-family: monospace;">cajitapaas</strong></div>
+            <div>• Usuario (Username): <strong id="dbUserVal" style="color: #52a9ff; font-family: monospace;">cajita_admin</strong></div>
+            <div>• Contraseña (Password): <strong id="dbPassVal" style="color: var(--amber); font-family: monospace;">cajitapaas2026</strong> <span style="font-size: 0.8rem; color: var(--text-muted);">(o la clave de admin que creaste al iniciar la app)</span></div>
+            <div>• Compus permitidas: <span id="dbAllowedIpVal">Cualquier PC de tu red Wi-Fi</span></div>
             <div>• Conexiones abiertas ahora: <span id="dbActiveConnsVal">0</span></div>
           </div>
         </div>

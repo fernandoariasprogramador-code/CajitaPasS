@@ -772,7 +772,8 @@ async function loadProjects() {
 // 7. MODO PC (PUENTE DBEAVER) Y BASES DE DATOS
 // ============================================================================
 
-function renderBridgeStatus(bridge) {
+function renderBridgeStatus(rawPayload) {
+  const bridge = rawPayload && rawPayload.bridge ? rawPayload.bridge : rawPayload;
   if (!bridge) return;
   dbeaverSwitch.checked = Boolean(bridge.enabled);
 
@@ -783,12 +784,24 @@ function renderBridgeStatus(bridge) {
       bridge.mode === 'session'
         ? 'Se apaga solo cuando cierres esta pestaña'
         : `Se apaga solo en ${Math.ceil((bridge.remainingSeconds || 0) / 60)} min`;
-    bridgeTimerText.textContent = `${modeLabel} · Compus conectadas: ${bridge.activeConnections}`;
+    bridgeTimerText.textContent = `${modeLabel} · Compus conectadas: ${bridge.activeConnections ?? 0}`;
     dbeaverConnectionBox.classList.remove('hidden');
-    document.getElementById('dbHostVal').textContent = bridge.host;
-    document.getElementById('dbPortVal').textContent = bridge.port;
-    document.getElementById('dbAllowedIpVal').textContent = bridge.allowedIp || 'Tu red Wi-Fi';
-    document.getElementById('dbActiveConnsVal').textContent = bridge.activeConnections;
+
+    const dbHostEl = document.getElementById('dbHostVal');
+    const dbPortEl = document.getElementById('dbPortVal');
+    const dbNameEl = document.getElementById('dbNameVal');
+    const dbUserEl = document.getElementById('dbUserVal');
+    const dbPassEl = document.getElementById('dbPassVal');
+    const dbAllowedIpEl = document.getElementById('dbAllowedIpVal');
+    const dbActiveConnsEl = document.getElementById('dbActiveConnsVal');
+
+    if (dbHostEl) dbHostEl.textContent = bridge.host || window.location.hostname || '127.0.0.1';
+    if (dbPortEl) dbPortEl.textContent = bridge.port || 13306;
+    if (dbNameEl) dbNameEl.textContent = bridge.database || 'cajitapaas';
+    if (dbUserEl) dbUserEl.textContent = bridge.user || 'cajita_admin';
+    if (dbPassEl) dbPassEl.textContent = bridge.password || getRawApiKey() || 'cajitapaas2026';
+    if (dbAllowedIpEl) dbAllowedIpEl.textContent = bridge.allowedIp || 'Cualquier PC de tu red Wi-Fi';
+    if (dbActiveConnsEl) dbActiveConnsEl.textContent = bridge.activeConnections ?? 0;
   } else {
     bridgeStateTitle.textContent = 'Modo PC: APAGADO (Protegido)';
     bridgeStateTitle.style.color = '#f5f9fc';
@@ -911,6 +924,7 @@ btnCreateDb.addEventListener('click', async () => {
       document.getElementById('newDbUser').value = '';
       document.getElementById('newDbPass').value = '';
       loadDatabases();
+      fetchBridgeStatus();
       showResultModal({
         type: 'success',
         title: `¡Base "${dbName}" creada!`,
@@ -968,6 +982,11 @@ btnRunSql.addEventListener('click', async () => {
 // 8. CONFIGURACIÓN DEL TÚNEL CLOUDFLARE Y OBTENCIÓN DE LA URL PÚBLICA
 // ============================================================================
 
+const topLanUrl = document.getElementById('topLanUrl');
+const topLanIpVal = document.getElementById('topLanIpVal');
+const topLanPortVal = document.getElementById('topLanPortVal');
+const btnCopyLanUrl = document.getElementById('btnCopyLanUrl');
+
 const topTunnelUrl = document.getElementById('topTunnelUrl');
 const topTunnelBadge = document.getElementById('topTunnelBadge');
 const btnCopyTunnelUrl = document.getElementById('btnCopyTunnelUrl');
@@ -983,18 +1002,29 @@ const inputTunnelToken = document.getElementById('inputTunnelToken');
 
 function renderTunnelInfo(tunnel) {
   if (!tunnel) return;
-  const pubUrl = tunnel.publicUrl || 'Generando link...';
+  const lanIp = tunnel.lanIp || window.location.hostname || '127.0.0.1';
+  const lanPort = tunnel.lanPort || window.location.port || 4000;
+  const lanUrl = tunnel.lanAdminUrl || tunnel.lanUrl || `http://${lanIp}:${lanPort}`;
+
+  if (topLanUrl) {
+    topLanUrl.textContent = lanUrl;
+    topLanUrl.href = lanUrl;
+  }
+  if (topLanIpVal) topLanIpVal.textContent = lanIp;
+  if (topLanPortVal) topLanPortVal.textContent = String(lanPort);
+
+  const pubUrl = tunnel.publicUrl || lanUrl;
   if (topTunnelUrl) {
     topTunnelUrl.textContent = pubUrl;
-    topTunnelUrl.href = tunnel.publicUrl || '#';
+    topTunnelUrl.href = pubUrl;
   }
   if (topTunnelBadge) {
     topTunnelBadge.textContent =
       tunnel.mode === 'token' ? 'DOMINIO PROPIO FIJO' : 'MODO GRATIS (TryCloudflare)';
   }
   if (tunnelPublicUrlVal) tunnelPublicUrlVal.textContent = pubUrl;
-  if (tunnelAdminUrlVal) tunnelAdminUrlVal.textContent = tunnel.adminUrl || `${pubUrl}/_control/`;
-  if (tunnelLanUrlVal && tunnel.lanUrl) tunnelLanUrlVal.textContent = tunnel.lanUrl;
+  if (tunnelAdminUrlVal) tunnelAdminUrlVal.textContent = tunnel.adminUrl || lanUrl;
+  if (tunnelLanUrlVal) tunnelLanUrlVal.textContent = lanUrl;
 }
 
 async function fetchTunnelStatus() {
@@ -1006,6 +1036,19 @@ async function fetchTunnelStatus() {
       renderTunnelInfo(data);
     }
   } catch (_e) {}
+}
+
+if (btnCopyLanUrl) {
+  btnCopyLanUrl.addEventListener('click', async () => {
+    const urlText = topLanUrl ? topLanUrl.textContent.trim() : '';
+    try {
+      await navigator.clipboard.writeText(urlText);
+      btnCopyLanUrl.textContent = '✅ ¡IP:Puerto Copiado!';
+      setTimeout(() => {
+        btnCopyLanUrl.textContent = '📋 Copiar IP:Puerto Local';
+      }, 2000);
+    } catch (_e) {}
+  });
 }
 
 if (btnCopyTunnelUrl) {
