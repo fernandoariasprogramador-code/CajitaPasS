@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/branding/cps-logo.jpg" alt="CPS - CajitaPaaS Logo" width="420" />
+  <img src="./assets/branding/cajitapaas-logo.jpg" alt="CPS - CajitaPaaS Logo" width="420" />
 </p>
 
 <h1 align="center">📦 CPS (CajitaPaaS)</h1>
