@@ -53,7 +53,15 @@ jobs:
       - name: 5. Compilar APK (CajitaPaaS ARM64)
         working-directory: ./android
         run: |
-          /tmp/gradle-dist/gradle-8.9/bin/gradle assembleDebug --no-daemon --stacktrace --console=plain
+          /tmp/gradle-dist/gradle-8.9/bin/gradle assembleDebug --no-daemon --stacktrace --console=plain 2>&1 | tee /tmp/gradle_build.log || {
+            echo "::error title=Gradle Build Failed::Error durante la compilación en Gradle"
+            echo "## ❌ Error de Compilación en Gradle" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            grep -E "e: |error:|FAILED|FAILURE:|Exception" /tmp/gradle_build.log | tail -n 50 >> $GITHUB_STEP_SUMMARY
+            tail -n 120 /tmp/gradle_build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
       - name: 6. Publicar APK lista para descargar e instalar en el celular
         uses: actions/upload-artifact@v4

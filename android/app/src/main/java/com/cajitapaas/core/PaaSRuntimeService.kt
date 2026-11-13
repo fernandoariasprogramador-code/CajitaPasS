@@ -109,7 +109,7 @@ class PaaSRuntimeService : Service() {
             )
             bundleFile.bufferedWriter().use { writer ->
                 for (dir in certDirs) {
-                    if (dir.exists() && dir.isDirectory()) {
+                    if (dir.exists() && dir.isDirectory) {
                         val files = dir.listFiles() ?: emptyArray()
                         if (files.isNotEmpty()) {
                             for (f in files) {
