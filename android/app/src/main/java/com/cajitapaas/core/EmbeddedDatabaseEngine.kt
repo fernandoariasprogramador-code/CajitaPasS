@@ -493,7 +493,36 @@ class EmbeddedDatabaseEngine(private val context: Context) {
                 return currentDb
             }
 
-            if (upper.startsWith("SHOW WARNINGS") || upper.startsWith("SHOW ENGINES") || upper.startsWith("SHOW COLLATION") || upper.startsWith("SHOW CHARSET") || upper.startsWith("SHOW CHARACTER SET") || upper.startsWith("SHOW INDEX") || upper.startsWith("SHOW KEYS") || upper.startsWith("SHOW TABLE STATUS") || upper.startsWith("SHOW PROCEDURE") || upper.startsWith("SHOW FUNCTION")) {
+            if (upper.startsWith("SHOW CHARSET") || upper.startsWith("SHOW CHARACTER SET")) {
+                sendResultSet(
+                    output,
+                    startSeq,
+                    listOf("Charset", "Description", "Default collation", "Maxlen"),
+                    listOf(
+                        listOf("utf8mb4", "UTF-8 Unicode", "utf8mb4_general_ci", "4"),
+                        listOf("utf8", "UTF-8 Unicode", "utf8_general_ci", "3"),
+                        listOf("latin1", "cp1252 West European", "latin1_swedish_ci", "1")
+                    )
+                )
+                return currentDb
+            }
+
+            if (upper.startsWith("SHOW COLLATION")) {
+                sendResultSet(
+                    output,
+                    startSeq,
+                    listOf("Collation", "Charset", "Id", "Default", "Compiled", "Sortlen"),
+                    listOf(
+                        listOf("utf8mb4_general_ci", "utf8mb4", "45", "Yes", "Yes", "1"),
+                        listOf("utf8mb4_unicode_ci", "utf8mb4", "224", "", "Yes", "8"),
+                        listOf("utf8_general_ci", "utf8", "33", "Yes", "Yes", "1"),
+                        listOf("latin1_swedish_ci", "latin1", "8", "Yes", "Yes", "1")
+                    )
+                )
+                return currentDb
+            }
+
+            if (upper.startsWith("SHOW WARNINGS") || upper.startsWith("SHOW ENGINES") || upper.startsWith("SHOW INDEX") || upper.startsWith("SHOW KEYS") || upper.startsWith("SHOW TABLE STATUS") || upper.startsWith("SHOW PROCEDURE") || upper.startsWith("SHOW FUNCTION")) {
                 sendResultSet(output, startSeq, listOf("Info"), emptyList())
                 return currentDb
             }
@@ -536,10 +565,24 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             }
 
             if (upper.startsWith("CREATE DATABASE") || upper.startsWith("CREATE SCHEMA")) {
-                val dbName = sanitizeDbName(clean.substringAfterLast(" ").trim('`', '\'', '"'))
+                val afterCreate = clean.replace(Regex("(?i)^CREATE\\s+(DATABASE|SCHEMA)\\s+(IF\\s+NOT\\s+EXISTS\\s+)?"), "").trim()
+                val rawDbName = afterCreate.substringBefore(" ").trim('`', '\'', '"', ';')
+                val dbName = sanitizeDbName(rawDbName)
                 openOrCreateDatabase(dbName).close()
                 sendOkPacket(output, startSeq)
                 return currentDb
+            }
+
+            if (upper.startsWith("DROP DATABASE") || upper.startsWith("DROP SCHEMA")) {
+                val afterDrop = clean.replace(Regex("(?i)^DROP\\s+(DATABASE|SCHEMA)\\s+(IF\\s+EXISTS\\s+)?"), "").trim()
+                val rawDbName = afterDrop.substringBefore(" ").trim('`', '\'', '"', ';')
+                val dbName = sanitizeDbName(rawDbName)
+                val targetFile = File(dbDir, "$dbName.sqlite")
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                sendOkPacket(output, startSeq)
+                return if (currentDb == dbName) DEFAULT_DB_NAME else currentDb
             }
 
             // Consultas de catálogo e introspección de esquemas que DBeaver / JDBC ejecutan
@@ -852,7 +895,56 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             return
         }
 
-        // 6. Consultas para cualquier otra tabla de catálogo (TRIGGERS, VIEWS, ROUTINES, STATISTICS, etc.)
+        // 6. information_schema.CHARACTER_SETS
+        if (upper.contains("CHARACTER_SETS")) {
+            val cols = if (rawCols.contains("*")) {
+                listOf("CHARACTER_SET_NAME", "DEFAULT_COLLATE_NAME", "DESCRIPTION", "MAXLEN")
+            } else rawCols
+            val rows = listOf(
+                listOf("utf8mb4", "utf8mb4_general_ci", "UTF-8 Unicode", "4"),
+                listOf("utf8", "utf8_general_ci", "UTF-8 Unicode", "3"),
+                listOf("latin1", "latin1_swedish_ci", "cp1252 West European", "1")
+            )
+            val resultRows = rows.map { r ->
+                val map = mapOf(
+                    "CHARACTER_SET_NAME" to r[0],
+                    "DEFAULT_COLLATE_NAME" to r[1],
+                    "DESCRIPTION" to r[2],
+                    "MAXLEN" to r[3]
+                )
+                cols.map { c -> map[c.uppercase()] }
+            }
+            sendResultSet(output, startSeq, cols, resultRows)
+            return
+        }
+
+        // 7. information_schema.COLLATIONS
+        if (upper.contains("COLLATIONS")) {
+            val cols = if (rawCols.contains("*")) {
+                listOf("COLLATION_NAME", "CHARACTER_SET_NAME", "ID", "IS_DEFAULT", "IS_COMPILED", "SORTLEN")
+            } else rawCols
+            val rows = listOf(
+                listOf("utf8mb4_general_ci", "utf8mb4", "45", "Yes", "Yes", "1"),
+                listOf("utf8mb4_unicode_ci", "utf8mb4", "224", "No", "Yes", "8"),
+                listOf("utf8_general_ci", "utf8", "33", "Yes", "Yes", "1"),
+                listOf("latin1_swedish_ci", "latin1", "8", "Yes", "Yes", "1")
+            )
+            val resultRows = rows.map { r ->
+                val map = mapOf(
+                    "COLLATION_NAME" to r[0],
+                    "CHARACTER_SET_NAME" to r[1],
+                    "ID" to r[2],
+                    "IS_DEFAULT" to r[3],
+                    "IS_COMPILED" to r[4],
+                    "SORTLEN" to r[5]
+                )
+                cols.map { c -> map[c.uppercase()] }
+            }
+            sendResultSet(output, startSeq, cols, resultRows)
+            return
+        }
+
+        // 8. Consultas para cualquier otra tabla de catálogo (TRIGGERS, VIEWS, ROUTINES, STATISTICS, etc.)
         val cols = if (rawCols.contains("*")) listOf("Info") else rawCols
         sendResultSet(output, startSeq, cols, emptyList())
     }
