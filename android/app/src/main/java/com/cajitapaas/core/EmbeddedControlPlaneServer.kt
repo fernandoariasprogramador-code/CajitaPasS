@@ -297,14 +297,14 @@ class EmbeddedControlPlaneServer(
         var targetFile = File(appRootDir, cleanRel)
 
         // Prevención de Path Traversal
-        if (!targetFile.canonicalPath.startsWith(appRootDir.canonicalPath)) {
+        if (!targetFile.getCanonicalPath().startsWith(appRootDir.getCanonicalPath())) {
             val forbidden = "403 Forbidden".toByteArray()
             out.write("HTTP/1.1 403 Forbidden\r\nContent-Length: ${forbidden.size}\r\n\r\n".toByteArray())
             out.write(forbidden)
             return
         }
 
-        if (targetFile.isDirectory) {
+        if (targetFile.isDirectory()) {
             targetFile = File(targetFile, "index.html")
         }
 
@@ -318,7 +318,9 @@ class EmbeddedControlPlaneServer(
 
         // Si aún no existe index.html en la raíz, buscar el primer archivo .html o .json disponible
         if (!targetFile.exists() && cleanRel == "index.html") {
-            val fallbackHtml = appRootDir.walkTopDown().firstOrNull { it.isFile && it.extension.lowercase() in listOf("html", "htm", "json") }
+            val fallbackHtml = appRootDir.walkTopDown().firstOrNull {
+                it.isFile() && it.name.substringAfterLast('.', "").lowercase() in listOf("html", "htm", "json")
+            }
             if (fallbackHtml != null) {
                 targetFile = fallbackHtml
             }
@@ -408,7 +410,7 @@ class EmbeddedControlPlaneServer(
         """.trimIndent()
 
         return if (rawHtml.contains("<head>", ignoreCase = true)) {
-            rawHtml.replaceFirst(Regex("(?i)<head>"), "<head>\n$bridgeScript")
+            rawHtml.replaceFirst(Regex("(?i)<head>"), Regex.escapeReplacement("<head>\n$bridgeScript"))
         } else {
             "$bridgeScript\n$rawHtml"
         }
@@ -427,8 +429,8 @@ class EmbeddedControlPlaneServer(
             if (File(sub, "index.html").exists()) return sub
         }
 
-        val children = baseDir.listFiles()?.filter { !it.name.startsWith(".") && it.name != "__MACOSX" }.orEmpty()
-        if (children.size == 1 && children[0].isDirectory) {
+        val children = baseDir.listFiles()?.filter { !it.name.startsWith(".") && it.name != "__MACOSX" } ?: emptyList()
+        if (children.size == 1 && children[0].isDirectory()) {
             return resolveEffectiveWebRoot(children[0])
         }
         return baseDir
@@ -480,7 +482,7 @@ class EmbeddedControlPlaneServer(
                     readRequestBodyAsString(input, contentLength)
                 } else if (contentLength > 0L && contentType.startsWith("multipart/form-data")) {
                     // Guardar el flujo multipart completo en un archivo temporal para extraer el .ZIP real
-                    val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}_${Thread.currentThread().id}.bin")
+                    val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}_${System.nanoTime()}.bin")
                     uploadedMultipartFile = tempFile
                     val maxPreview = 64 * 1024
                     val previewOut = ByteArrayOutputStream(minOf(contentLength.toInt().coerceAtLeast(0), maxPreview))
@@ -587,23 +589,23 @@ class EmbeddedControlPlaneServer(
             ZipInputStream(BufferedInputStream(fis)).use { zis ->
                 val buffer = ByteArray(16 * 1024)
                 while (true) {
-                    val entry = runCatching { zis.nextEntry }.getOrNull() ?: break
-                    val entryName = entry.name.replace('\\', '/').trimStart('/')
+                    val entry = runCatching { zis.getNextEntry() }.getOrNull() ?: break
+                    val entryName = entry.getName().replace('\\', '/').trimStart('/')
                     if (entryName.isEmpty() || entryName.startsWith("__MACOSX")) {
                         runCatching { zis.closeEntry() }
                         continue
                     }
 
                     val outFile = File(targetDir, entryName)
-                    if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath)) {
+                    if (!outFile.getCanonicalPath().startsWith(targetDir.getCanonicalPath())) {
                         runCatching { zis.closeEntry() }
                         continue
                     }
 
-                    if (entry.isDirectory) {
+                    if (entry.isDirectory()) {
                         outFile.mkdirs()
                     } else {
-                        outFile.parentFile?.mkdirs()
+                        outFile.getParentFile()?.mkdirs()
                         FileOutputStream(outFile).use { outStream ->
                             while (true) {
                                 val len = runCatching { zis.read(buffer) }.getOrDefault(-1)
@@ -894,7 +896,7 @@ class EmbeddedControlPlaneServer(
             }
 
             // Si aún no había archivos (ej. deploy git simulado), crear un index.html base
-            if (!appTargetDir.exists() || (appTargetDir.listFiles()?.isEmpty() == true)) {
+            if (!appTargetDir.exists() || (appTargetDir.listFiles()?.size ?: 0) == 0) {
                 appTargetDir.mkdirs()
                 File(appTargetDir, "index.html").writeText(
                     """

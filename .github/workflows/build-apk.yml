@@ -47,19 +47,13 @@ jobs:
             -o android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
           # En Android no existe /etc/resolv.conf ni demonio DNS en 127.0.0.1:53.
           # Parcheamos el fallback DNS de Go ("127.0.0.1:53", 12 bytes) a Cloudflare DNS ("1.1.1.1:0053", 12 bytes)
-          python3 -c '
-          p = "android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so"
-          data = open(p, "rb").read()
-          patched = data.replace(b"127.0.0.1:53", b"1.1.1.1:0053")
-          open(p, "wb").write(patched)
-          print("DNS fallback patched occurrences:", data.count(b"127.0.0.1:53"))
-          '
+          python3 -c "p='android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so'; d=open(p,'rb').read(); open(p,'wb').write(d.replace(b'127.0.0.1:53',b'1.1.1.1:0053'))"
           chmod 755 android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
 
       - name: 5. Compilar APK (CajitaPaaS ARM64)
         working-directory: ./android
         run: |
-          /tmp/gradle-dist/gradle-8.9/bin/gradle assembleDebug --no-daemon --stacktrace
+          /tmp/gradle-dist/gradle-8.9/bin/gradle assembleDebug --no-daemon --stacktrace --console=plain
 
       - name: 6. Publicar APK lista para descargar e instalar en el celular
         uses: actions/upload-artifact@v4
