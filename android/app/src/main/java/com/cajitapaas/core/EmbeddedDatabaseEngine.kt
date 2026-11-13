@@ -166,7 +166,28 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
         openOrCreateDatabase(safeDb).use { db ->
             val upper = trimmedSql.uppercase()
-            if (upper.startsWith("SELECT") || upper.startsWith("PRAGMA") || upper.startsWith("SHOW") || upper.startsWith("DESCRIBE") || upper.startsWith("EXPLAIN")) {
+            if (isSystemCatalogQuery(upper)) {
+                cols.put("TABLE_NAME")
+                cols.put("TABLE_TYPE")
+                cols.put("ENGINE")
+                val files = dbDir.listFiles { f -> f.isFile && f.name.endsWith(".sqlite") } ?: emptyArray()
+                for (f in files) {
+                    val dbN = f.name.removeSuffix(".sqlite")
+                    runCatching {
+                        openOrCreateDatabase(dbN).use { d ->
+                            d.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'", null).use { c ->
+                                while (c.moveToNext()) {
+                                    val r = JSONObject()
+                                    r.put("TABLE_NAME", c.getString(0))
+                                    r.put("TABLE_TYPE", "BASE TABLE")
+                                    r.put("ENGINE", "InnoDB")
+                                    rows.put(r)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (upper.startsWith("SELECT") || upper.startsWith("PRAGMA") || upper.startsWith("SHOW") || upper.startsWith("DESCRIBE") || upper.startsWith("EXPLAIN")) {
                 val effectiveQuery = translateMysqlQueryToSqlite(trimmedSql)
                 db.rawQuery(effectiveQuery, null).use { cursor ->
                     val colNames = cursor.columnNames
@@ -354,7 +375,15 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             }
 
             if (upper.startsWith("USE ")) {
-                val targetDb = sanitizeDbName(clean.substring(4).trim().trim('`', '\'', '"'))
+                val rawTarget = clean.substring(4).trim().trim('`', '\'', '"', ';')
+                val targetDb = sanitizeDbName(rawTarget)
+                if (targetDb.equals("information_schema", ignoreCase = true) ||
+                    targetDb.equals("performance_schema", ignoreCase = true) ||
+                    targetDb.equals("mysql", ignoreCase = true) ||
+                    targetDb.equals("sys", ignoreCase = true)) {
+                    sendOkPacket(output, startSeq)
+                    return targetDb
+                }
                 openOrCreateDatabase(targetDb).close()
                 sendOkPacket(output, startSeq)
                 return targetDb
@@ -470,7 +499,11 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             }
 
             if (upper.startsWith("SHOW COLUMNS") || upper.startsWith("SHOW FULL COLUMNS") || upper.startsWith("DESCRIBE ") || upper.startsWith("DESC ")) {
-                val tbl = clean.substringAfterLast(" ").trim('`', '\'', '"').substringAfterLast('.')
+                val tbl = if (clean.contains("FROM", ignoreCase = true)) {
+                    clean.substringAfter("FROM", "").trim().substringBefore(" ").trim('`', '\'', '"', ';').substringAfterLast('.')
+                } else {
+                    clean.substringAfterLast(" ").trim('`', '\'', '"', ';').substringAfterLast('.')
+                }
                 val rows = mutableListOf<List<String?>>()
                 openOrCreateDatabase(currentDb).use { db ->
                     db.rawQuery("PRAGMA table_info(`$tbl`)", null).use { c ->
@@ -509,6 +542,12 @@ class EmbeddedDatabaseEngine(private val context: Context) {
                 return currentDb
             }
 
+            // Consultas de catálogo e introspección de esquemas que DBeaver / JDBC ejecutan
+            if (isSystemCatalogQuery(upper)) {
+                handleInformationSchemaQuery(clean, upper, currentDb, output, startSeq)
+                return currentDb
+            }
+
             // Consultas de lectura generales (SELECT)
             if (upper.startsWith("SELECT") || upper.startsWith("PRAGMA")) {
                 val sqliteQuery = translateMysqlQueryToSqlite(clean)
@@ -540,6 +579,282 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             sendErrorPacket(output, startSeq, 1064, safeMsg)
         }
         return currentDb
+    }
+
+    private fun isSystemCatalogQuery(upper: String): Boolean {
+        return upper.contains("INFORMATION_SCHEMA") ||
+            upper.contains("PERFORMANCE_SCHEMA") ||
+            upper.contains("MYSQL.") ||
+            upper.contains("SYS.")
+    }
+
+    private fun extractSelectColumns(clean: String): List<String> {
+        val upper = clean.uppercase()
+        val selectIdx = upper.indexOf("SELECT")
+        if (selectIdx < 0) return listOf("Result")
+        val afterSelect = clean.substring(selectIdx + 6).trim()
+        val fromIdx = afterSelect.uppercase().indexOf("FROM")
+        val colsPart = if (fromIdx > 0) afterSelect.substring(0, fromIdx) else afterSelect
+        val items = colsPart.split(",")
+        val result = mutableListOf<String>()
+        for (item in items) {
+            val trimmed = item.trim()
+            if (trimmed.isEmpty()) continue
+            val colName = if (trimmed.contains(" AS ", ignoreCase = true)) {
+                trimmed.substringAfterLast(" ").trim('`', '\'', '"')
+            } else {
+                trimmed.substringAfterLast(".").trim('`', '\'', '"')
+            }
+            if (colName.isNotEmpty()) {
+                result.add(colName)
+            }
+        }
+        return if (result.isEmpty()) listOf("Result") else result
+    }
+
+    private fun handleInformationSchemaQuery(
+        clean: String,
+        upper: String,
+        currentDb: String,
+        output: OutputStream,
+        startSeq: Int
+    ) {
+        val rawCols = extractSelectColumns(clean)
+        val schemaMatch = Regex("(?i)TABLE_SCHEMA\\s*=\\s*['\"]([^'\"]+)['\"]").find(clean)
+            ?: Regex("(?i)SCHEMA_NAME\\s*=\\s*['\"]([^'\"]+)['\"]").find(clean)
+        val targetCandidate = schemaMatch?.groups?.get(1)?.value?.let { sanitizeDbName(it) } ?: currentDb
+        val targetDb = if (targetCandidate.equals("information_schema", ignoreCase = true) ||
+            targetCandidate.equals("performance_schema", ignoreCase = true) ||
+            targetCandidate.equals("mysql", ignoreCase = true) ||
+            targetCandidate.equals("sys", ignoreCase = true)) {
+            DEFAULT_DB_NAME
+        } else targetCandidate
+
+        val tableMatch = Regex("(?i)TABLE_NAME\\s*=\\s*['\"]([^'\"]+)['\"]").find(clean)
+        val filterTable = tableMatch?.groups?.get(1)?.value?.trim('`', '\'', '"')
+
+        // 1. Consultas de agregación COUNT(...)
+        if (upper.contains("COUNT(")) {
+            var count = 0
+            if (upper.contains("TABLES") || upper.contains("COLUMNS")) {
+                openOrCreateDatabase(targetDb).use { db ->
+                    val countQuery = if (filterTable != null) {
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=? AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'"
+                    } else {
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'"
+                    }
+                    val args = if (filterTable != null) arrayOf(filterTable) else null
+                    db.rawQuery(countQuery, args).use { c ->
+                        if (c.moveToFirst()) count = c.getInt(0)
+                    }
+                }
+            }
+            val colName = rawCols.firstOrNull() ?: "count(*)"
+            sendResultSet(output, startSeq, listOf(colName), listOf(listOf(count.toString())))
+            return
+        }
+
+        // Obtener tablas del esquema objetivo
+        val tables = mutableListOf<String>()
+        openOrCreateDatabase(targetDb).use { db ->
+            val listQuery = if (filterTable != null) {
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=? AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'"
+            } else {
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%' ORDER BY name"
+            }
+            val args = if (filterTable != null) arrayOf(filterTable) else null
+            db.rawQuery(listQuery, args).use { c ->
+                while (c.moveToNext()) {
+                    tables.add(c.getString(0))
+                }
+            }
+        }
+
+        // 2. information_schema.COLUMNS
+        if (upper.contains("COLUMNS")) {
+            val cols = if (rawCols.contains("*")) {
+                listOf(
+                    "TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION",
+                    "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE", "CHARACTER_MAXIMUM_LENGTH",
+                    "CHARACTER_OCTET_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE", "DATETIME_PRECISION",
+                    "CHARACTER_SET_NAME", "COLLATION_NAME", "COLUMN_TYPE", "COLUMN_KEY", "EXTRA",
+                    "PRIVILEGES", "COLUMN_COMMENT", "IS_GENERATED", "GENERATION_EXPRESSION"
+                )
+            } else rawCols
+
+            val rows = mutableListOf<List<String?>>()
+            openOrCreateDatabase(targetDb).use { db ->
+                for (tbl in tables) {
+                    db.rawQuery("PRAGMA table_info(`$tbl`)", null).use { c ->
+                        while (c.moveToNext()) {
+                            val cid = c.getInt(0)
+                            val name = c.getString(1)
+                            val type = c.getString(2).ifEmpty { "TEXT" }
+                            val notNull = c.getInt(3)
+                            val dflt = c.getString(4)
+                            val pk = c.getInt(5)
+
+                            val colValues = mapOf(
+                                "TABLE_CATALOG" to "def",
+                                "TABLE_SCHEMA" to targetDb,
+                                "TABLE_NAME" to tbl,
+                                "COLUMN_NAME" to name,
+                                "ORDINAL_POSITION" to (cid + 1).toString(),
+                                "COLUMN_DEFAULT" to dflt,
+                                "IS_NULLABLE" to (if (notNull == 1) "NO" else "YES"),
+                                "DATA_TYPE" to type.lowercase().substringBefore("("),
+                                "COLUMN_TYPE" to type.lowercase(),
+                                "COLUMN_KEY" to (if (pk == 1) "PRI" else ""),
+                                "EXTRA" to (if (pk == 1 && type.contains("INT", ignoreCase = true)) "auto_increment" else ""),
+                                "CHARACTER_MAXIMUM_LENGTH" to "65535",
+                                "CHARACTER_OCTET_LENGTH" to "65535",
+                                "NUMERIC_PRECISION" to "10",
+                                "NUMERIC_SCALE" to "0",
+                                "DATETIME_PRECISION" to "0",
+                                "CHARACTER_SET_NAME" to "utf8mb4",
+                                "COLLATION_NAME" to "utf8mb4_unicode_ci",
+                                "PRIVILEGES" to "select,insert,update,references",
+                                "COLUMN_COMMENT" to "",
+                                "IS_GENERATED" to "NEVER",
+                                "GENERATION_EXPRESSION" to null
+                            )
+
+                            val r = mutableListOf<String?>()
+                            for (col in cols) {
+                                r.add(colValues[col.uppercase()])
+                            }
+                            rows.add(r)
+                        }
+                    }
+                }
+            }
+            sendResultSet(output, startSeq, cols, rows)
+            return
+        }
+
+        // 3. information_schema.TABLES
+        if (upper.contains("TABLES")) {
+            val cols = if (rawCols.contains("*")) {
+                listOf(
+                    "TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE", "ENGINE",
+                    "VERSION", "ROW_FORMAT", "TABLE_ROWS", "AVG_ROW_LENGTH", "DATA_LENGTH",
+                    "MAX_DATA_LENGTH", "INDEX_LENGTH", "DATA_FREE", "AUTO_INCREMENT",
+                    "CREATE_TIME", "UPDATE_TIME", "CHECK_TIME", "TABLE_COLLATION", "CHECKSUM",
+                    "CREATE_OPTIONS", "TABLE_COMMENT"
+                )
+            } else rawCols
+
+            val rows = mutableListOf<List<String?>>()
+            for (tbl in tables) {
+                val tableValues = mapOf(
+                    "TABLE_CATALOG" to "def",
+                    "TABLE_SCHEMA" to targetDb,
+                    "TABLE_NAME" to tbl,
+                    "TABLE_TYPE" to "BASE TABLE",
+                    "ENGINE" to "InnoDB",
+                    "VERSION" to "10",
+                    "ROW_FORMAT" to "Dynamic",
+                    "TABLE_ROWS" to "0",
+                    "AVG_ROW_LENGTH" to "0",
+                    "DATA_LENGTH" to "16384",
+                    "MAX_DATA_LENGTH" to "0",
+                    "INDEX_LENGTH" to "0",
+                    "DATA_FREE" to "0",
+                    "AUTO_INCREMENT" to "1",
+                    "CREATE_TIME" to "2026-01-01 00:00:00",
+                    "UPDATE_TIME" to "2026-01-01 00:00:00",
+                    "CHECK_TIME" to null,
+                    "TABLE_COLLATION" to "utf8mb4_unicode_ci",
+                    "CHECKSUM" to null,
+                    "CREATE_OPTIONS" to "",
+                    "TABLE_COMMENT" to ""
+                )
+                val r = mutableListOf<String?>()
+                for (col in cols) {
+                    r.add(tableValues[col.uppercase()])
+                }
+                rows.add(r)
+            }
+            sendResultSet(output, startSeq, cols, rows)
+            return
+        }
+
+        // 4. information_schema.SCHEMATA
+        if (upper.contains("SCHEMATA")) {
+            val cols = if (rawCols.contains("*")) {
+                listOf("CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH")
+            } else rawCols
+
+            val dbsJson = listDatabasesJson()
+            val rows = mutableListOf<List<String?>>()
+            for (i in 0 until dbsJson.length()) {
+                val dbName = dbsJson.getJSONObject(i).getString("name")
+                val schemaValues = mapOf(
+                    "CATALOG_NAME" to "def",
+                    "SCHEMA_NAME" to dbName,
+                    "DEFAULT_CHARACTER_SET_NAME" to "utf8mb4",
+                    "DEFAULT_COLLATION_NAME" to "utf8mb4_unicode_ci",
+                    "SQL_PATH" to null
+                )
+                val r = mutableListOf<String?>()
+                for (col in cols) {
+                    r.add(schemaValues[col.uppercase()])
+                }
+                rows.add(r)
+            }
+            sendResultSet(output, startSeq, cols, rows)
+            return
+        }
+
+        // 5. information_schema.KEY_COLUMN_USAGE o TABLE_CONSTRAINTS
+        if (upper.contains("KEY_COLUMN_USAGE") || upper.contains("TABLE_CONSTRAINTS")) {
+            val cols = if (rawCols.contains("*")) {
+                listOf(
+                    "CONSTRAINT_CATALOG", "CONSTRAINT_SCHEMA", "CONSTRAINT_NAME", "TABLE_CATALOG",
+                    "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION",
+                    "POSITION_IN_UNIQUE_CONSTRAINT", "REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME"
+                )
+            } else rawCols
+
+            val rows = mutableListOf<List<String?>>()
+            openOrCreateDatabase(targetDb).use { db ->
+                for (tbl in tables) {
+                    db.rawQuery("PRAGMA table_info(`$tbl`)", null).use { c ->
+                        while (c.moveToNext()) {
+                            val pk = c.getInt(5)
+                            if (pk == 1) {
+                                val colName = c.getString(1)
+                                val constraintValues = mapOf(
+                                    "CONSTRAINT_CATALOG" to "def",
+                                    "CONSTRAINT_SCHEMA" to targetDb,
+                                    "CONSTRAINT_NAME" to "PRIMARY",
+                                    "TABLE_CATALOG" to "def",
+                                    "TABLE_SCHEMA" to targetDb,
+                                    "TABLE_NAME" to tbl,
+                                    "COLUMN_NAME" to colName,
+                                    "ORDINAL_POSITION" to "1",
+                                    "POSITION_IN_UNIQUE_CONSTRAINT" to null,
+                                    "REFERENCED_TABLE_SCHEMA" to null,
+                                    "REFERENCED_TABLE_NAME" to null,
+                                    "REFERENCED_COLUMN_NAME" to null
+                                )
+                                val r = mutableListOf<String?>()
+                                for (col in cols) {
+                                    r.add(constraintValues[col.uppercase()])
+                                }
+                                rows.add(r)
+                            }
+                        }
+                    }
+                }
+            }
+            sendResultSet(output, startSeq, cols, rows)
+            return
+        }
+
+        // 6. Consultas para cualquier otra tabla de catálogo (TRIGGERS, VIEWS, ROUTINES, STATISTICS, etc.)
+        val cols = if (rawCols.contains("*")) listOf("Info") else rawCols
+        sendResultSet(output, startSeq, cols, emptyList())
     }
 
     private fun sanitizeErrorMessage(raw: String?): String {
