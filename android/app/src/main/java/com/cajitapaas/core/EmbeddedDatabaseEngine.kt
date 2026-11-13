@@ -276,25 +276,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
                 return
             }
 
-            // 1. Intentar conectar al demonio MariaDB local (127.0.0.1:3306) si está corriendo en PRoot/Docker
-            val localMariaDb = runCatching {
-                Socket().apply { connect(InetSocketAddress("127.0.0.1", 3306), 400) }
-            }.getOrNull()
-
-            if (localMariaDb != null) {
-                openSockets.add(localMariaDb)
-                val t1 = thread {
-                    runCatching { clientSocket.getInputStream().copyTo(localMariaDb.getOutputStream()) }
-                    runCatching { localMariaDb.close() }
-                    runCatching { clientSocket.close() }
-                }
-                runCatching { localMariaDb.getInputStream().copyTo(clientSocket.getOutputStream()) }
-                t1.join(1000)
-                runCatching { localMariaDb.close() }
-            } else {
-                // 2. Responder directamente usando el protocolo de red MySQL/MariaDB v10
-                handleMySqlWireProtocolSession(clientSocket)
-            }
+            // Atender directamente la conexión mediante el protocolo de red binario MySQL/MariaDB v10
+            handleMySqlWireProtocolSession(clientSocket)
         } catch (e: Exception) {
             Log.d(TAG, "Sesión DBeaver finalizada: ${e.message}")
         } finally {
@@ -359,7 +342,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         output: OutputStream,
         startSeq: Int
     ): String {
-        val clean = rawQuery.trim().removeSuffix(";").trim()
+        val clean = rawQuery.replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "").trim().removeSuffix(";").trim()
         val upper = clean.uppercase()
 
         try {
@@ -377,12 +360,40 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             }
 
             if (upper.startsWith("SELECT @@") || upper.contains("@@VERSION") || upper.contains("VERSION()")) {
-                sendResultSet(
-                    output = output,
-                    startSeq = startSeq,
-                    columns = listOf("@@version", "@@version_comment", "@@tx_isolation", "@@session.auto_increment_increment", "DATABASE()"),
-                    rows = listOf(listOf("10.11.6-MariaDB-CPS", "CajitaPaaS Android Embedded MariaDB", "REPEATABLE-READ", "1", currentDb))
+                val varMap = mapOf(
+                    "@@VERSION" to "10.11.6-MariaDB-CPS",
+                    "@@VERSION_COMMENT" to "CajitaPaaS Android Embedded MariaDB",
+                    "@@TX_ISOLATION" to "REPEATABLE-READ",
+                    "@@TRANSACTION_ISOLATION" to "REPEATABLE-READ",
+                    "@@SESSION.TX_ISOLATION" to "REPEATABLE-READ",
+                    "@@SESSION.TRANSACTION_ISOLATION" to "REPEATABLE-READ",
+                    "@@SESSION.AUTO_INCREMENT_INCREMENT" to "1",
+                    "@@AUTO_INCREMENT_INCREMENT" to "1",
+                    "@@MAX_ALLOWED_PACKET" to "67108864",
+                    "@@SYSTEM_TIME_ZONE" to "UTC",
+                    "@@TIME_ZONE" to "SYSTEM",
+                    "@@LOWER_CASE_TABLE_NAMES" to "0",
+                    "DATABASE()" to currentDb,
+                    "VERSION()" to "10.11.6-MariaDB-CPS"
                 )
+                val rawCols = clean.substringAfter("SELECT", "").substringBefore("FROM").substringBefore("LIMIT").split(",")
+                val cols = mutableListOf<String>()
+                val vals = mutableListOf<String?>()
+                for (c in rawCols) {
+                    val trimmed = c.trim()
+                    if (trimmed.isEmpty()) continue
+                    val name = if (trimmed.contains(" AS ", ignoreCase = true)) {
+                        trimmed.substringAfterLast(" ", "").trim('`', '\'', '"')
+                    } else trimmed
+                    val lookupKey = trimmed.substringBefore(" ").trim().uppercase()
+                    cols.add(name)
+                    vals.add(varMap[lookupKey] ?: "1")
+                }
+                if (cols.isEmpty()) {
+                    cols.add("@@version")
+                    vals.add("10.11.6-MariaDB-CPS")
+                }
+                sendResultSet(output, startSeq, cols, listOf(vals))
                 return currentDb
             }
 
