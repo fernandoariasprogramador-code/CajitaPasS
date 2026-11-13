@@ -178,11 +178,9 @@ class EmbeddedControlPlaneServer(
         }
     }
 
-    /**
-     * Atiende peticiones en el puerto 8080 (Gateway local y destino del Túnel Cloudflare).
-     * Enruta `/_control/*` al panel administrativo y el resto de rutas (`/`, `/api/*`, etc.)
-     * a las aplicaciones subidas por el usuario.
-     */
+    // Atiende peticiones en el puerto 8080 (Gateway local y destino del Túnel Cloudflare).
+    // Enruta /_control/ al panel administrativo y el resto de rutas (/, /api/, etc.)
+    // a las aplicaciones subidas por el usuario.
     private fun handleGatewayClient(socket: Socket) {
         socket.use { client ->
             client.soTimeout = 60_000
