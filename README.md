@@ -61,6 +61,55 @@ Tienes **dos formas** de descargar el instalador para tu teléfono Android:
 
 ---
 
+## 🔌 Puertos Expuestos y Cómo Conectar tu Frontend con tu API
+
+Cuando subes tus proyectos desde el Panel de Control, **CPS** organiza y expone automáticamente los puertos en tu red local Wi-Fi y en el Túnel Público de Cloudflare:
+
+| Servicio / Rol                                | Puerto en Red Local (Wi-Fi)                                 | Ruta en el Túnel Público (`https://*.trycloudflare.com`) | Descripción                                                                                                                                  |
+| :-------------------------------------------- | :---------------------------------------------------------- | :------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------- |
+| **🎨 Frontend o App Monolítica (Fullstack)**  | **`:8080`** _(y **`:80`** directo si tienes Root)_          | `/` _(Raíz principal del link)_                          | Sirve tu página web principal lista para el público (ej. `http://192.168.1.4:8080` o `http://192.168.1.4` con Root vía `iptables`).          |
+| **⚙️ Backend / API (Separado)**               | **`:3001`**, **`:3003`**, etc. _(+ Gateway `:8080/api/_`)\* | `/api/*`                                                 | Cada Backend tiene su propio puerto dedicado en la LAN (ej. `http://192.168.1.4:3001`) y además se enruta bajo `/api/` en el puerto `:8080`. |
+| **🛠️ Panel de Configuración CPS**             | **`:4000`**                                                 | `/_control/`                                             | Panel administrativo para gestionar tus despliegues desde cualquier PC o celular en tu Wi-Fi (`http://192.168.1.4:4000`).                    |
+| **🗄️ Base de Datos MariaDB / Puente DBeaver** | **`:13306`** _(Temporal con 1 clic)_                        | _Solo Red Local (LAN)_                                   | Se abre por tiempo limitado cuando activas el puente en la pestaña **Base de Datos** para conectarte desde **DBeaver**.                      |
+
+> [!NOTE]
+> **¿Por qué se usa `:8080` en celulares sin Root?** Por seguridad del sistema operativo Android (Linux Kernel), las aplicaciones sin permisos Root tienen prohibido abrir puertos menores a `1024` (como el puerto `80`). Por eso **`:8080`** funciona siempre en cualquier teléfono, y si tu equipo tiene **Root**, CPS crea automáticamente una regla NAT (`iptables`) para que entrar a `http://<IP_DEL_CELULAR>` (puerto `80`) redirija de forma transparente al `:8080`.
+
+---
+
+### 🔗 ¿Cómo hago para que mi Frontend y mi API se conecten e interactúen?
+
+Si subes un **Frontend** (React, Vue, HTML/JS) y un **Backend API** por separado, tienes **3 formas** de conectarlos sin preocuparte por cabeceras CORS ni por qué IP le tocó al celular hoy:
+
+#### Opción 1: Usar rutas relativas `/api/...` (Recomendada ⭐)
+
+El servidor Gateway de CPS (en el puerto `:8080` y en el enlace HTTPS del túnel de Cloudflare) une automáticamente ambos mundos bajo el mismo dominio:
+
+- Todo lo que pidas a `/` carga los archivos de tu **Frontend**.
+- Todo lo que tu Frontend pida a **`/api/...`** se redirige internamente al **Backend API** que hayas subido.
+
+```javascript
+// Ejemplo en tu Frontend: funciona igual en Wi-Fi local y en el link público de Cloudflare
+const res = await fetch("/api/usuarios");
+const data = await res.json();
+```
+
+#### Opción 2: Puente Automático para proyectos que ya apuntan a `localhost` (Sin tocar tu código 🪄)
+
+Si ya compilaste tu proyecto apuntando a `http://localhost:3001` o `http://127.0.0.1:3000`, **no necesitas recompilarlo**. Al servir tu `index.html`, CPS inyecta un puente ligero que intercepta las llamadas `fetch` y `XMLHttpRequest` dirigidas a `localhost`:
+
+- Si alguien entra desde tu red Wi-Fi (`http://192.168.1.4:8080`), redirige la petición automáticamente a la IP real del teléfono y al puerto de tu Backend (`http://192.168.1.4:3001/...`).
+- Si alguien entra desde Internet por el túnel seguro (`https://xxxx.trycloudflare.com`), la redirige automáticamente a `/api/...` por HTTPS para evitar bloqueos de contenido mixto (_Mixed Content_).
+
+#### Opción 3: Variable global `window.CPS_API_URL`
+
+Si prefieres leer la URL base de la API desde una variable dinámica en tu JavaScript, CPS expone automáticamente en el navegador:
+
+- `window.CPS_API_URL`: Apunta al puerto directo de tu API cuando navegas en red local (ej. `http://192.168.1.4:3001`) o a `/api` cuando navegas por el túnel HTTPS.
+- `window.CPS_GATEWAY_API_URL`: Apunta siempre al proxy unificado `/api` del origen actual.
+
+---
+
 ## 🛠️ Resumen Técnico (Para curiosos y programadores)
 
 Si más adelante quieres saber cómo funciona el motor por debajo, **CPS (`CajitaPaaS`)** combina:
@@ -79,8 +128,9 @@ Si más adelante quieres saber cómo funciona el motor por debajo, **CPS (`Cajit
 
 - [`android/app/src/main/AndroidManifest.xml`](android/app/src/main/AndroidManifest.xml): Permisos de servidor en segundo plano (`ForegroundService`, `WAKE_LOCK`), control de red/Wi-Fi (`ACCESS_NETWORK_STATE`, `CHANGE_WIFI_STATE`, `NEARBY_WIFI_DEVICES`) y extracción de binarios ARM64 (`extractNativeLibs="true"`).
 - [`android/app/src/main/java/com/cajitapaas/ui/MainActivity.kt`](android/app/src/main/java/com/cajitapaas/ui/MainActivity.kt): Pantalla principal de la app que enciende el servidor y abre el Panel Web integrado.
-- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt): Servidor HTTP nativo en Kotlin (puerto `4000`) que sirve el panel administrativo y la API dentro del teléfono.
-- [`android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt`](android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt): Servicio persistente con `WakeLock` de CPU, `WifiLock` de baja latencia, supervisión de red y túnel Cloudflare integrado.
+- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt): Servidor HTTP multipuerto en Kotlin que sirve el Panel Administrativo (`:4000`), el Gateway Web público (`:8080`), los puertos dedicados por aplicación (`:3001+`) y el puente automático Frontend ↔ API.
+- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedDatabaseEngine.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedDatabaseEngine.kt): Motor de base de datos relacional persistente con servidor de protocolo binario MySQL/MariaDB en el puerto `:13306` para conexión directa desde DBeaver.
+- [`android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt`](android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt): Servicio persistente con `WakeLock` de CPU, `WifiLock` de baja latencia, redirección de puerto `80 -> 8080` en Root (`iptables`) y túnel Cloudflare integrado.
 - [`android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt`](android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt): Gestor de Failover/Failback de red con `ConnectivityManager.NetworkCallback` y corrutina de sondeo para dispositivos de antena única.
 - [`android/app/src/main/java/com/cajitapaas/core/RootShellUtils.kt`](android/app/src/main/java/com/cajitapaas/core/RootShellUtils.kt): Utilidad segura basada en `ProcessBuilder` para ejecutar comandos `su` capturando `stdout` y `stderr` de forma asíncrona con timeout.
 - [`android/app/src/main/java/com/cajitapaas/core/RootDetector.kt`](android/app/src/main/java/com/cajitapaas/core/RootDetector.kt): Detector automático del modo del teléfono (Normal vs Root).
