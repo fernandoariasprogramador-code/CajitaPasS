@@ -6,6 +6,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Inet4Address
@@ -16,28 +19,37 @@ import java.net.Socket
 import java.net.URLDecoder
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.zip.ZipInputStream
 import kotlin.concurrent.thread
 
 /**
- * Servidor HTTP del Control Plane embebido nativamente en Kotlin para que la APK
- * funcione inmediatamente al instalarla, sirviendo el Panel Web tanto dentro de la APK (WebView)
- * como en toda la red interna Wi-Fi (`0.0.0.0:4000`) y Túnel Cloudflare.
+ * Servidor HTTP del Control Plane (puerto 4000) + Gateway de Aplicaciones (puerto 8080)
+ * + Servidores dedicados por puerto de cada App desplegada (3001, 3003, etc.).
+ *
+ * Al subir un archivo .ZIP, extrae su contenido real en `filesDir/deployed_apps/<appName>`
+ * y levanta inmediatamente el servidor HTTP en `0.0.0.0:<activePort>` y en el Gateway `:8080`.
  */
 class EmbeddedControlPlaneServer(
     private val context: Context,
     private val port: Int = 4000,
-    var failoverManager: NetworkFailoverManager? = null
+    var failoverManager: NetworkFailoverManager? = null,
+    var onTunnelRestartRequested: ((mode: String, token: String, customDomain: String) -> String?)? = null
 ) {
     companion object {
         private const val TAG = "CPSHttpServer"
         private const val PREF_PROJECTS_KEY = "deployed_projects_v2_json"
+        const val GATEWAY_PORT = 8080
     }
 
     @Volatile
     private var isRunning = false
     private var serverSocket: ServerSocket? = null
+    private var gatewaySocket: ServerSocket? = null
+    private val appServerSockets = ConcurrentHashMap<String, ServerSocket>()
     private val executor = Executors.newCachedThreadPool()
+
     private val prefs by lazy {
         context.getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE)
     }
@@ -46,16 +58,26 @@ class EmbeddedControlPlaneServer(
         EmbeddedDatabaseEngine(context.applicationContext)
     }
 
+    private val deployedAppsBaseDir by lazy {
+        File(context.filesDir, "deployed_apps").apply { mkdirs() }
+    }
+
     @Volatile
     var publicTunnelUrl: String? = null
+
+    @Volatile
+    var tunnelStatus: String = "connecting"
+
+    @Volatile
+    var tunnelLastError: String? = null
 
     fun start() {
         if (isRunning) return
         isRunning = true
 
-        thread(name = "CPS-Embedded-HTTP") {
+        // 1. Iniciar servidor principal del Panel de Configuración (0.0.0.0:4000)
+        thread(name = "CPS-Embedded-HTTP-$port") {
             try {
-                // Escuchar explícitamente en 0.0.0.0 para que cualquier PC de la red interna Wi-Fi pueda entrar
                 serverSocket = ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))
                 Log.i(TAG, "Control Plane escuchando en red interna 0.0.0.0:$port (LAN IP: ${getDeviceLanIp()}:$port)")
                 while (isRunning) {
@@ -63,17 +85,276 @@ class EmbeddedControlPlaneServer(
                     executor.execute { handleClient(client) }
                 }
             } catch (e: Exception) {
-                if (isRunning) Log.e(TAG, "Error en servidor HTTP embebido", e)
+                if (isRunning) Log.e(TAG, "Error en servidor HTTP embebido (:$port)", e)
             }
         }
+
+        // 2. Iniciar Gateway reverso en 0.0.0.0:8080 (para el túnel Cloudflare y acceso general)
+        thread(name = "CPS-Gateway-$GATEWAY_PORT") {
+            try {
+                gatewaySocket = ServerSocket(GATEWAY_PORT, 50, InetAddress.getByName("0.0.0.0"))
+                Log.i(TAG, "Gateway de Apps escuchando en 0.0.0.0:$GATEWAY_PORT")
+                while (isRunning) {
+                    val client = gatewaySocket?.accept() ?: break
+                    executor.execute { handleGatewayClient(client) }
+                }
+            } catch (e: Exception) {
+                if (isRunning) Log.e(TAG, "Error en Gateway HTTP (:$GATEWAY_PORT)", e)
+            }
+        }
+
+        // 3. Levantar los servidores dedicados (ej. :3001, :3003) de las apps que ya estaban guardadas
+        restoreRunningAppServers()
     }
 
     fun stop() {
         isRunning = false
         dbEngine.stopBridge()
-        try {
-            serverSocket?.close()
-        } catch (_: Exception) {}
+        runCatching { serverSocket?.close() }
+        runCatching { gatewaySocket?.close() }
+        for ((_, sock) in appServerSockets) {
+            runCatching { sock.close() }
+        }
+        appServerSockets.clear()
+    }
+
+    private fun restoreRunningAppServers() {
+        val projects = loadSavedProjects()
+        val keys = projects.keys()
+        while (keys.hasNext()) {
+            val appName = keys.next()
+            val info = projects.optJSONObject(appName) ?: continue
+            val appPort = info.optInt("activePort", 3001)
+            startDedicatedAppServer(appName, appPort)
+        }
+    }
+
+    /**
+     * Abre un ServerSocket real en `0.0.0.0:<appPort>` (ej. 3001) para servir los archivos
+     * descomprimidos del `.ZIP` subido por el usuario en `http://<IP_DEL_CELU>:3001`.
+     */
+    private fun startDedicatedAppServer(appName: String, appPort: Int) {
+        stopDedicatedAppServer(appName)
+        thread(name = "CPS-App-$appName-$appPort") {
+            try {
+                val sock = ServerSocket(appPort, 50, InetAddress.getByName("0.0.0.0"))
+                appServerSockets[appName] = sock
+                Log.i(TAG, "App '$appName' sirviendo en http://${getDeviceLanIp()}:$appPort")
+                while (isRunning && !sock.isClosed) {
+                    val client = sock.accept() ?: break
+                    executor.execute { handleDedicatedAppClient(appName, client) }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Servidor de app '$appName' en puerto $appPort finalizado: ${e.message}")
+            }
+        }
+    }
+
+    private fun stopDedicatedAppServer(appName: String) {
+        appServerSockets.remove(appName)?.let { sock ->
+            runCatching { sock.close() }
+        }
+    }
+
+    private fun handleDedicatedAppClient(appName: String, socket: Socket) {
+        socket.use { client ->
+            client.soTimeout = 15_000
+            val input = BufferedInputStream(client.getInputStream(), 8192)
+            val out = client.getOutputStream()
+
+            val requestLine = readHeaderLine(input) ?: return
+            val parts = requestLine.split(" ")
+            if (parts.size < 2) return
+            val rawPath = parts[1].substringBefore("?")
+
+            while (true) {
+                val line = readHeaderLine(input) ?: break
+                if (line.isEmpty()) break
+            }
+
+            serveDeployedAppFile(appName, rawPath, out)
+            runCatching { out.flush() }
+            runCatching { client.shutdownOutput() }
+        }
+    }
+
+    /**
+     * Atiende peticiones en el puerto 8080 (Gateway local y destino del Túnel Cloudflare).
+     * Enruta `/_control/*` al panel administrativo y el resto de rutas (`/`, `/api/*`, etc.)
+     * a las aplicaciones subidas por el usuario.
+     */
+    private fun handleGatewayClient(socket: Socket) {
+        socket.use { client ->
+            client.soTimeout = 60_000
+            val remoteIp = client.inetAddress?.hostAddress?.removePrefix("::ffff:") ?: ""
+            val input = BufferedInputStream(client.getInputStream(), 32 * 1024)
+            val out = client.getOutputStream()
+
+            val requestLine = readHeaderLine(input) ?: return
+            val parts = requestLine.split(" ")
+            if (parts.size < 2) return
+            val method = parts[0]
+            val fullUri = parts[1]
+            val rawPath = fullUri.substringBefore("?")
+            val rawQuery = if (fullUri.contains("?")) fullUri.substringAfter("?") else ""
+            val queryParams = parseQueryParams(rawQuery)
+
+            val headers = mutableMapOf<String, String>()
+            var contentLength = 0L
+            while (true) {
+                val line = readHeaderLine(input) ?: break
+                if (line.isEmpty()) break
+                val idx = line.indexOf(':')
+                if (idx > 0) {
+                    val key = line.substring(0, idx).trim().lowercase()
+                    val value = line.substring(idx + 1).trim()
+                    headers[key] = value
+                    if (key == "content-length") {
+                        contentLength = value.toLongOrNull() ?: 0L
+                    }
+                }
+            }
+
+            // Si acceden a /_control/* a través del túnel o gateway :8080, servir el Panel Administrativo
+            if (rawPath == "/_control" || rawPath.startsWith("/_control/")) {
+                val stripped = rawPath.removePrefix("/_control").ifEmpty { "/" }
+                if (stripped.startsWith("/api/")) {
+                    val body = readRequestBodyAsString(input, contentLength)
+                    handleApiRequest(method, stripped, queryParams, body, null, remoteIp, out)
+                } else {
+                    serveStaticAsset(stripped, out)
+                }
+                runCatching { out.flush() }
+                runCatching { client.shutdownOutput() }
+                return
+            }
+
+            // Buscar qué app desplegada coincide con la ruta solicitada
+            val projects = loadSavedProjects()
+            val matchedApp = findMatchingAppForPath(projects, rawPath)
+
+            if (matchedApp != null) {
+                val (appName, routePrefix) = matchedApp
+                val subPath = if (routePrefix != "/" && rawPath.startsWith(routePrefix)) {
+                    rawPath.removePrefix(routePrefix).let { if (it.startsWith("/")) it else "/$it" }
+                } else {
+                    rawPath
+                }
+                serveDeployedAppFile(appName, subPath, out)
+            } else {
+                // Si todavía no hay ninguna app subida en `/`, mostrar una página amigable indicando que el servidor está activo
+                serveStaticAsset(rawPath, out)
+            }
+
+            runCatching { out.flush() }
+            runCatching { client.shutdownOutput() }
+        }
+    }
+
+    private fun findMatchingAppForPath(projects: JSONObject, requestPath: String): Pair<String, String>? {
+        val entries = mutableListOf<Pair<String, String>>()
+        val keys = projects.keys()
+        while (keys.hasNext()) {
+            val appName = keys.next()
+            val info = projects.optJSONObject(appName) ?: continue
+            val route = info.optString("routePath", "/").removeSuffix("*").removeSuffix("/").ifEmpty { "/" }
+            entries.add(appName to route)
+        }
+        if (entries.isEmpty()) return null
+
+        // Priorizar rutas más específicas (ej. /api antes que /)
+        entries.sortByDescending { if (it.second == "/") 0 else it.second.length }
+        for ((appName, prefix) in entries) {
+            if (prefix == "/" || requestPath == prefix || requestPath.startsWith("$prefix/")) {
+                return appName to prefix
+            }
+        }
+        return entries.first()
+    }
+
+    /**
+     * Sirve los archivos reales extraídos del `.ZIP` de la aplicación `appName`.
+     */
+    private fun serveDeployedAppFile(appName: String, rawPath: String, out: OutputStream) {
+        if (rawPath == "/health" || rawPath == "/api/health") {
+            return sendJson(out, 200, JSONObject().put("status", "healthy").put("app", appName).toString())
+        }
+
+        val appRootDir = resolveEffectiveWebRoot(File(deployedAppsBaseDir, appName))
+        if (!appRootDir.exists()) {
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put("app", appName)
+                    .put("status", "online")
+                    .put("message", "Servicio '$appName' activo en CajitaPaaS.")
+                    .toString()
+            )
+        }
+
+        val cleanRel = URLDecoder.decode(rawPath, "UTF-8").trimStart('/').ifEmpty { "index.html" }
+        var targetFile = File(appRootDir, cleanRel)
+
+        // Prevención de Path Traversal
+        if (!targetFile.canonicalPath.startsWith(appRootDir.canonicalPath)) {
+            val forbidden = "403 Forbidden".toByteArray()
+            out.write("HTTP/1.1 403 Forbidden\r\nContent-Length: ${forbidden.size}\r\n\r\n".toByteArray())
+            out.write(forbidden)
+            return
+        }
+
+        if (targetFile.isDirectory) {
+            targetFile = File(targetFile, "index.html")
+        }
+
+        // Soporte SPA (React / Vue / Angular / Vite): si no existe la ruta y no tiene extensión estática, servir index.html
+        if (!targetFile.exists() && !cleanRel.substringAfterLast('/').contains('.')) {
+            val spaIndex = File(appRootDir, "index.html")
+            if (spaIndex.exists()) {
+                targetFile = spaIndex
+            }
+        }
+
+        // Si aún no existe index.html en la raíz, buscar el primer archivo .html o .json disponible
+        if (!targetFile.exists() && cleanRel == "index.html") {
+            val fallbackHtml = appRootDir.walkTopDown().firstOrNull { it.isFile && it.extension.lowercase() in listOf("html", "htm", "json") }
+            if (fallbackHtml != null) {
+                targetFile = fallbackHtml
+            }
+        }
+
+        if (targetFile.exists() && targetFile.isFile) {
+            val bytes = targetFile.readBytes()
+            val mime = resolveMimeType(targetFile.name)
+            val header = "HTTP/1.1 200 OK\r\nContent-Type: $mime\r\nContent-Length: ${bytes.size}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+            out.write(header.toByteArray(Charsets.UTF_8))
+            out.write(bytes)
+        } else {
+            val notFoundMsg = "Archivo no encontrado en '$appName': /$cleanRel".toByteArray(Charsets.UTF_8)
+            out.write("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${notFoundMsg.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            out.write(notFoundMsg)
+        }
+    }
+
+    /**
+     * Si el usuario comprimió una carpeta completa (ej. `mi-web/index.html` o `dist/index.html`),
+     * detecta automáticamente la subcarpeta donde se encuentra `index.html`.
+     */
+    private fun resolveEffectiveWebRoot(baseDir: File): File {
+        if (!baseDir.exists()) return baseDir
+        if (File(baseDir, "index.html").exists()) return baseDir
+
+        for (candidate in listOf("dist", "build", "public", "www", "out")) {
+            val sub = File(baseDir, candidate)
+            if (File(sub, "index.html").exists()) return sub
+        }
+
+        val children = baseDir.listFiles()?.filter { !it.name.startsWith(".") && it.name != "__MACOSX" }.orEmpty()
+        if (children.size == 1 && children[0].isDirectory) {
+            return resolveEffectiveWebRoot(children[0])
+        }
+        return baseDir
     }
 
     private fun handleClient(socket: Socket) {
@@ -108,62 +389,66 @@ class EmbeddedControlPlaneServer(
                 }
             }
 
-            // Si el navegador envía "Expect: 100-continue" antes de mandar el .ZIP, responder 100 Continue
             if (headers["expect"]?.contains("100-continue", ignoreCase = true) == true) {
                 out.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.UTF_8))
                 out.flush()
             }
 
-            // Leer SIEMPRE el 100% de los bytes de Content-Length en binario (ByteArray)
-            // para evitar que el kernel Android envíe un TCP RST (Connection Reset) al subir archivos .ZIP grandes
             val contentType = headers["content-type"] ?: ""
             val isChunked = headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
 
-            val body = if (contentLength > 0L && !contentType.startsWith("multipart/form-data")) {
-                val safeLen = contentLength.coerceAtMost(2L * 1024L * 1024L).toInt()
-                val buf = ByteArray(safeLen)
-                var readTotal = 0
-                while (readTotal < safeLen) {
-                    val r = input.read(buf, readTotal, safeLen - readTotal)
-                    if (r == -1) break
-                    readTotal += r
-                }
-                var remaining = contentLength - readTotal
-                val discard = ByteArray(16 * 1024)
-                while (remaining > 0L) {
-                    val r = input.read(discard, 0, minOf(discard.size.toLong(), remaining).toInt())
-                    if (r <= 0) break
-                    remaining -= r
-                }
-                String(buf, 0, readTotal, Charsets.UTF_8)
-            } else if (contentLength > 0L && contentType.startsWith("multipart/form-data")) {
-                // Capturar los primeros 64KB para leer campos de texto del FormData y drenar el 100% del archivo .ZIP
-                val maxPreview = 64 * 1024
-                val previewOut = ByteArrayOutputStream(minOf(contentLength.toInt().coerceAtLeast(0), maxPreview))
-                val chunk = ByteArray(32 * 1024)
-                var remaining = contentLength
-                while (remaining > 0L) {
-                    val toRead = minOf(chunk.size.toLong(), remaining).toInt()
-                    val r = input.read(chunk, 0, toRead)
-                    if (r <= 0) break
-                    if (previewOut.size() < maxPreview) {
-                        val copyLen = minOf(r, maxPreview - previewOut.size())
-                        previewOut.write(chunk, 0, copyLen)
-                    }
-                    remaining -= r
-                }
-                String(previewOut.toByteArray(), Charsets.ISO_8859_1)
-            } else if (isChunked) {
-                drainChunkedBody(input)
-            } else ""
+            var uploadedMultipartFile: File? = null
+            val body = try {
+                if (contentLength > 0L && !contentType.startsWith("multipart/form-data")) {
+                    readRequestBodyAsString(input, contentLength)
+                } else if (contentLength > 0L && contentType.startsWith("multipart/form-data")) {
+                    // Guardar el flujo multipart completo en un archivo temporal para extraer el .ZIP real
+                    val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}_${Thread.currentThread().id}.bin")
+                    uploadedMultipartFile = tempFile
+                    val maxPreview = 64 * 1024
+                    val previewOut = ByteArrayOutputStream(minOf(contentLength.toInt().coerceAtLeast(0), maxPreview))
+                    val chunk = ByteArray(32 * 1024)
+                    var remaining = contentLength
 
-            if (rawPath.startsWith("/api/")) {
-                handleApiRequest(method, rawPath, queryParams, body, remoteIp, out)
-            } else {
-                serveStaticAsset(rawPath, out)
+                    FileOutputStream(tempFile).use { fos ->
+                        while (remaining > 0L) {
+                            val toRead = minOf(chunk.size.toLong(), remaining).toInt()
+                            val r = input.read(chunk, 0, toRead)
+                            if (r <= 0) break
+                            fos.write(chunk, 0, r)
+                            if (previewOut.size() < maxPreview) {
+                                val copyLen = minOf(r, maxPreview - previewOut.size())
+                                previewOut.write(chunk, 0, copyLen)
+                            }
+                            remaining -= r
+                        }
+                        fos.flush()
+                    }
+                    String(previewOut.toByteArray(), Charsets.ISO_8859_1)
+                } else if (isChunked) {
+                    drainChunkedBody(input)
+                } else ""
+            } catch (e: Exception) {
+                Log.e(TAG, "Error leyendo cuerpo HTTP", e)
+                ""
             }
 
-            // Cierre limpio TCP (RFC 7230 Sección 6.6) para evitar Connection Reset (TCP RST) en Chrome/WebView
+            try {
+                if (rawPath.startsWith("/api/")) {
+                    handleApiRequest(method, rawPath, queryParams, body, uploadedMultipartFile, remoteIp, out)
+                } else if (rawPath.startsWith("/app/")) {
+                    // Ruta directa opcional: /app/<nombreApp>/...
+                    val afterApp = rawPath.removePrefix("/app/")
+                    val appName = afterApp.substringBefore("/")
+                    val subPath = "/" + afterApp.substringAfter("/", "")
+                    serveDeployedAppFile(appName, subPath, out)
+                } else {
+                    serveStaticAsset(rawPath, out)
+                }
+            } finally {
+                uploadedMultipartFile?.delete()
+            }
+
             runCatching { out.flush() }
             runCatching { client.shutdownOutput() }
             runCatching {
@@ -176,6 +461,117 @@ class EmbeddedControlPlaneServer(
         }
     }
 
+    private fun readRequestBodyAsString(input: InputStream, contentLength: Long): String {
+        val safeLen = contentLength.coerceAtMost(2L * 1024L * 1024L).toInt()
+        val buf = ByteArray(safeLen)
+        var readTotal = 0
+        while (readTotal < safeLen) {
+            val r = input.read(buf, readTotal, safeLen - readTotal)
+            if (r == -1) break
+            readTotal += r
+        }
+        var remaining = contentLength - readTotal
+        val discard = ByteArray(16 * 1024)
+        while (remaining > 0L) {
+            val r = input.read(discard, 0, minOf(discard.size.toLong(), remaining).toInt())
+            if (r <= 0) break
+            remaining -= r
+        }
+        return String(buf, 0, readTotal, Charsets.UTF_8)
+    }
+
+    /**
+     * Extrae el contenido de un archivo `.ZIP` embebido dentro de un cuerpo `multipart/form-data`.
+     * Localiza la cabecera binaria `PK\x03\x04` (`0x50, 0x4B, 0x03, 0x04`) y descomprime todas las entradas.
+     */
+    private fun extractZipFromMultipartFile(multipartFile: File, targetDir: File): Int {
+        if (!multipartFile.exists() || multipartFile.length() < 4) return 0
+
+        val zipStartOffset = findZipMagicOffset(multipartFile)
+        if (zipStartOffset < 0L) {
+            Log.w(TAG, "No se encontró firma PK\\x03\\x04 en el paquete subido.")
+            return 0
+        }
+
+        if (targetDir.exists()) {
+            targetDir.deleteRecursively()
+        }
+        targetDir.mkdirs()
+
+        var extractedCount = 0
+        FileInputStream(multipartFile).use { fis ->
+            var skipped = 0L
+            while (skipped < zipStartOffset) {
+                val s = fis.skip(zipStartOffset - skipped)
+                if (s <= 0) break
+                skipped += s
+            }
+
+            ZipInputStream(BufferedInputStream(fis)).use { zis ->
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val entry = runCatching { zis.nextEntry }.getOrNull() ?: break
+                    val entryName = entry.name.replace('\\', '/').trimStart('/')
+                    if (entryName.isEmpty() || entryName.startsWith("__MACOSX")) {
+                        runCatching { zis.closeEntry() }
+                        continue
+                    }
+
+                    val outFile = File(targetDir, entryName)
+                    if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath)) {
+                        runCatching { zis.closeEntry() }
+                        continue
+                    }
+
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        FileOutputStream(outFile).use { outStream ->
+                            while (true) {
+                                val len = runCatching { zis.read(buffer) }.getOrDefault(-1)
+                                if (len <= 0) break
+                                outStream.write(buffer, 0, len)
+                            }
+                        }
+                        extractedCount++
+                    }
+                    runCatching { zis.closeEntry() }
+                }
+            }
+        }
+        Log.i(TAG, "Archivo .ZIP descomprimido en ${targetDir.absolutePath} ($extractedCount archivos extraídos)")
+        return extractedCount
+    }
+
+    /**
+     * Busca la posición exacta donde comienza el binario `.ZIP` (`PK\x03\x04` = `0x50 0x4B 0x03 0x04`)
+     * dentro del archivo temporal multipart.
+     */
+    private fun findZipMagicOffset(file: File): Long {
+        FileInputStream(file).use { fis ->
+            // La cabecera multipart antes del archivo suele medir menos de 16KB
+            val searchLimit = minOf(file.length(), 128L * 1024L).toInt()
+            val buf = ByteArray(searchLimit)
+            var total = 0
+            while (total < searchLimit) {
+                val r = fis.read(buf, total, searchLimit - total)
+                if (r <= 0) break
+                total += r
+            }
+            for (i in 0..(total - 4)) {
+                if (buf[i] == 0x50.toByte() &&
+                    buf[i + 1] == 0x4B.toByte() &&
+                    buf[i + 2] == 0x03.toByte() &&
+                    buf[i + 3] == 0x04.toByte()
+                ) {
+                    return i.toLong()
+                }
+            }
+        }
+        return -1L
+    }
+
     private fun drainChunkedBody(input: InputStream): String {
         val previewOut = ByteArrayOutputStream(4096)
         val discard = ByteArray(16 * 1024)
@@ -183,7 +579,7 @@ class EmbeddedControlPlaneServer(
             val sizeLine = readHeaderLine(input)?.trim() ?: break
             val chunkSize = sizeLine.substringBefore(";").trim().toLongOrNull(16) ?: break
             if (chunkSize == 0L) {
-                readHeaderLine(input) // CRLF final
+                readHeaderLine(input)
                 break
             }
             var remaining = chunkSize
@@ -195,15 +591,11 @@ class EmbeddedControlPlaneServer(
                 }
                 remaining -= r
             }
-            readHeaderLine(input) // CRLF tras cada chunk
+            readHeaderLine(input)
         }
         return String(previewOut.toByteArray(), Charsets.ISO_8859_1)
     }
 
-    /**
-     * Lee una línea de cabecera HTTP byte a byte sin usar BufferedReader(UTF-8),
-     * evitando corromper o consumir por adelantado bytes binarios del cuerpo multipart (.zip).
-     */
     private fun readHeaderLine(input: InputStream): String? {
         val out = ByteArrayOutputStream(128)
         while (true) {
@@ -241,6 +633,7 @@ class EmbeddedControlPlaneServer(
         path: String,
         queryParams: Map<String, String>,
         body: String,
+        uploadedMultipartFile: File?,
         remoteIp: String,
         out: OutputStream
     ) {
@@ -278,7 +671,6 @@ class EmbeddedControlPlaneServer(
                 .putString("salt", salt)
                 .putString("hash", hash)
                 .putString("token", token)
-                // Si el usuario aún no definió clave personalizada de BD, usar su misma clave o la por defecto
                 .putString("db_custom_pass", pass)
                 .apply()
 
@@ -314,18 +706,23 @@ class EmbeddedControlPlaneServer(
         }
 
         // ====================================================================
-        // GESTIÓN REAL DE PROYECTOS / SERVIDORES (SIN SERVIDORES FANTASMA)
+        // GESTIÓN REAL DE PROYECTOS / SERVIDORES Y EXTRACCIÓN DE .ZIP
         // ====================================================================
         if (path == "/api/v1/projects" && method == "GET") {
             val projectsObj = loadSavedProjects()
             val activeSlots = JSONObject()
             val pm2 = JSONArray()
+            val lanIp = getDeviceLanIp()
 
             val keys = projectsObj.keys()
             while (keys.hasNext()) {
                 val appName = keys.next()
                 val info = projectsObj.optJSONObject(appName) ?: continue
+                val appPort = info.optInt("activePort", 3001)
+                info.put("appUrl", "http://$lanIp:$appPort")
+                info.put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT${info.optString("routePath", "/").removeSuffix("*")}")
                 activeSlots.put(appName, info)
+
                 val color = info.optString("activeColor", "blue")
                 pm2.put(
                     JSONObject()
@@ -342,6 +739,8 @@ class EmbeddedControlPlaneServer(
                 JSONObject()
                     .put("activeSlots", activeSlots)
                     .put("pm2Processes", pm2)
+                    .put("lanIp", lanIp)
+                    .put("gatewayPort", GATEWAY_PORT)
                     .toString()
             )
         }
@@ -349,6 +748,9 @@ class EmbeddedControlPlaneServer(
         if (path.startsWith("/api/v1/projects/") && method == "DELETE") {
             val rawName = path.removePrefix("/api/v1/projects/").trim()
             val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            stopDedicatedAppServer(appName)
+            File(deployedAppsBaseDir, appName).deleteRecursively()
+
             val projectsObj = loadSavedProjects()
             projectsObj.remove(appName)
             saveProjects(projectsObj)
@@ -377,14 +779,61 @@ class EmbeddedControlPlaneServer(
 
             val projectsObj = loadSavedProjects()
             val existing = projectsObj.optJSONObject(appName)
-            val nextPort = existing?.optInt("activePort", 3001) ?: (3001 + (projectsObj.length() * 2))
-            val nextColor = if (existing?.optString("activeColor") == "blue") "green" else "blue"
 
+            // Asignar un puerto libre exclusivo para esta app (3001, 3003, 3005...)
+            val usedPorts = mutableSetOf<Int>()
+            val k = projectsObj.keys()
+            while (k.hasNext()) {
+                val key = k.next()
+                if (key != appName) {
+                    usedPorts.add(projectsObj.optJSONObject(key)?.optInt("activePort", 0) ?: 0)
+                }
+            }
+            var candidatePort = existing?.optInt("activePort", 3001) ?: 3001
+            while (usedPorts.contains(candidatePort)) {
+                candidatePort += 2
+            }
+
+            val nextColor = if (existing?.optString("activeColor") == "blue") "green" else "blue"
+            val appTargetDir = File(deployedAppsBaseDir, appName)
+
+            // Extraer el .ZIP subido a disco
+            var filesExtracted = 0
+            if (uploadedMultipartFile != null && uploadedMultipartFile.exists()) {
+                filesExtracted = runCatching {
+                    extractZipFromMultipartFile(uploadedMultipartFile, appTargetDir)
+                }.getOrDefault(0)
+            }
+
+            // Si aún no había archivos (ej. deploy git simulado), crear un index.html base
+            if (!appTargetDir.exists() || (appTargetDir.listFiles()?.isEmpty() == true)) {
+                appTargetDir.mkdirs()
+                File(appTargetDir, "index.html").writeText(
+                    """
+                    <!DOCTYPE html>
+                    <html lang="es">
+                    <head><meta charset="UTF-8"><title>$appName · CajitaPaaS</title></head>
+                    <body style="background:#0d131a;color:#f5f9fc;font-family:sans-serif;text-align:center;padding:3rem;">
+                      <h1 style="color:#00e5a3;">🚀 $appName está Online</h1>
+                      <p>Desplegado con éxito en CajitaPaaS (Puerto :$candidatePort · Ruta: $routePath)</p>
+                    </body>
+                    </html>
+                    """.trimIndent()
+                )
+            }
+
+            // Levantar el servidor HTTP real en el puerto asignado (ej. :3001)
+            startDedicatedAppServer(appName, candidatePort)
+
+            val lanIp = getDeviceLanIp()
             val slotInfo = JSONObject()
                 .put("appRole", appRole)
                 .put("routePath", routePath)
                 .put("activeColor", nextColor)
-                .put("activePort", nextPort)
+                .put("activePort", candidatePort)
+                .put("filesExtracted", filesExtracted)
+                .put("appUrl", "http://$lanIp:$candidatePort")
+                .put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT${routePath.removeSuffix("*")}")
                 .put("pid", 4200 + (projectsObj.length() * 17))
                 .put("memoryMb", if (appRole == "frontend") 38 else 54)
 
@@ -397,30 +846,43 @@ class EmbeddedControlPlaneServer(
                 JSONObject()
                     .put("status", "success")
                     .put("message", "¡Sistema actualizado con éxito!")
-                    .put("deployment", slotInfo.put("appName", appName))
+                    .put("deployment", JSONObject(slotInfo.toString()).put("appName", appName))
                     .toString()
             )
         }
 
         // ====================================================================
-        // ESTADO DEL TÚNEL Y DIRECCIÓN DE RED INTERNA (IP:PUERTO)
+        // ESTADO Y CONFIGURACIÓN DEL TÚNEL CLOUDFLARE + RED INTERNA (IP:PUERTO)
         // ====================================================================
-        if (path == "/api/v1/tunnel/status") {
-            val lanIp = getDeviceLanIp()
-            val lanAddress = "http://$lanIp:$port"
-            val pub = publicTunnelUrl ?: lanAddress
+        if (path == "/api/v1/tunnel/status" && method == "GET") {
+            return sendJson(out, 200, buildTunnelStatusJson().toString())
+        }
+
+        if (path == "/api/v1/tunnel/config" && method == "POST") {
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val mode = json.optString("mode", "quick")
+            val token = json.optString("token", "").trim()
+            val customDomain = json.optString("customDomain", "").trim()
+
+            if (mode == "token" && token.isEmpty()) {
+                return sendJson(out, 400, JSONObject().put("error", "Debes pegar el Token del túnel de Cloudflare.").toString())
+            }
+
+            prefs.edit()
+                .putString("tunnel_mode", mode)
+                .putString("tunnel_token", token)
+                .putString("tunnel_custom_domain", customDomain)
+                .apply()
+
+            onTunnelRestartRequested?.invoke(mode, token, customDomain)
+
+            val tunnelObj = buildTunnelStatusJson()
             return sendJson(
                 out,
                 200,
                 JSONObject()
-                    .put("mode", "quick")
-                    .put("status", "online")
-                    .put("publicUrl", pub)
-                    .put("adminUrl", if (publicTunnelUrl != null) "$pub/_control/" else lanAddress)
-                    .put("lanIp", lanIp)
-                    .put("lanPort", port)
-                    .put("lanUrl", lanAddress)
-                    .put("lanAdminUrl", lanAddress)
+                    .put("message", "Configuración de túnel actualizada.")
+                    .put("tunnel", tunnelObj)
                     .toString()
             )
         }
@@ -523,6 +985,26 @@ class EmbeddedControlPlaneServer(
         return sendJson(out, 200, JSONObject().put("status", "ok").toString())
     }
 
+    private fun buildTunnelStatusJson(): JSONObject {
+        val lanIp = getDeviceLanIp()
+        val lanAdminAddress = "http://$lanIp:$port"
+        val lanGatewayAddress = "http://$lanIp:$GATEWAY_PORT"
+        val mode = prefs.getString("tunnel_mode", "quick") ?: "quick"
+        val pub = publicTunnelUrl
+
+        return JSONObject()
+            .put("mode", mode)
+            .put("status", if (pub != null) "online" else tunnelStatus)
+            .put("publicUrl", pub ?: "Conectando túnel Cloudflare... (Usá $lanGatewayAddress en tu Wi-Fi)")
+            .put("adminUrl", if (pub != null) "$pub/_control/" else lanAdminAddress)
+            .put("lanIp", lanIp)
+            .put("lanPort", port)
+            .put("gatewayPort", GATEWAY_PORT)
+            .put("lanUrl", lanGatewayAddress)
+            .put("lanAdminUrl", lanAdminAddress)
+            .put("lastError", tunnelLastError ?: JSONObject.NULL)
+    }
+
     private fun loadSavedProjects(): JSONObject {
         val raw = prefs.getString(PREF_PROJECTS_KEY, null) ?: return JSONObject()
         return runCatching { JSONObject(raw) }.getOrNull() ?: JSONObject()
@@ -577,18 +1059,31 @@ class EmbeddedControlPlaneServer(
             .put("wifiConnected", wifiConnected)
     }
 
+    private fun resolveMimeType(fileName: String): String {
+        val lower = fileName.lowercase()
+        return when {
+            lower.endsWith(".html") || lower.endsWith(".htm") -> "text/html; charset=utf-8"
+            lower.endsWith(".js") || lower.endsWith(".mjs") -> "application/javascript; charset=utf-8"
+            lower.endsWith(".css") -> "text/css; charset=utf-8"
+            lower.endsWith(".json") -> "application/json; charset=utf-8"
+            lower.endsWith(".svg") -> "image/svg+xml"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".png") -> "image/png"
+            lower.endsWith(".webp") -> "image/webp"
+            lower.endsWith(".gif") -> "image/gif"
+            lower.endsWith(".ico") -> "image/x-icon"
+            lower.endsWith(".woff2") -> "font/woff2"
+            lower.endsWith(".woff") -> "font/woff"
+            lower.endsWith(".ttf") -> "font/ttf"
+            else -> "application/octet-stream"
+        }
+    }
+
     private fun serveStaticAsset(rawPath: String, out: OutputStream) {
         val cleanPath = if (rawPath == "/" || rawPath.isEmpty()) "public/index.html" else "public/${rawPath.trimStart('/')}"
         try {
             val bytes = context.assets.open(cleanPath).use { it.readBytes() }
-            val mime = when {
-                cleanPath.endsWith(".html") -> "text/html; charset=utf-8"
-                cleanPath.endsWith(".js") -> "application/javascript; charset=utf-8"
-                cleanPath.endsWith(".css") -> "text/css; charset=utf-8"
-                cleanPath.endsWith(".jpg") -> "image/jpeg"
-                cleanPath.endsWith(".png") -> "image/png"
-                else -> "application/octet-stream"
-            }
+            val mime = resolveMimeType(cleanPath)
             val header = "HTTP/1.1 200 OK\r\nContent-Type: $mime\r\nContent-Length: ${bytes.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
             out.write(header.toByteArray(Charsets.UTF_8))
             out.write(bytes)
@@ -604,7 +1099,7 @@ class EmbeddedControlPlaneServer(
     private fun sendJson(out: OutputStream, status: Int, json: String) {
         val bytes = json.toByteArray(Charsets.UTF_8)
         val statusText = if (status == 200) "OK" else if (status == 201) "Created" else "Error"
-        val header = "HTTP/1.1 $status $statusText\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        val header = "HTTP/1.1 $status $statusText\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         out.write(header.toByteArray(Charsets.UTF_8))
         out.write(bytes)
         out.flush()
@@ -616,10 +1111,6 @@ class EmbeddedControlPlaneServer(
             .joinToString("") { "%02x".format(it) }
     }
 
-    /**
-     * Obtiene la IP de la red interna Wi-Fi o Hotspot del teléfono (`wlan0`, `ap0`, `swlan0`),
-     * priorizando redes privadas (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`) sobre interfaces móviles (`rmnet`).
-     */
     fun getDeviceLanIp(): String {
         return try {
             val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
@@ -628,7 +1119,6 @@ class EmbeddedControlPlaneServer(
             for (nif in interfaces) {
                 if (!nif.isUp || nif.isLoopback) continue
                 val name = nif.name.lowercase()
-                // Ignorar interfaces de datos móviles (CGNAT celular) y túneles virtuales
                 if (name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("dummy") || name.startsWith("tun") || name.startsWith("p2p")) {
                     continue
                 }

@@ -699,6 +699,7 @@ async function loadProjects() {
     }
 
     const activeSlots = data.activeSlots || {};
+    const lanHost = data.lanIp || window.location.hostname || '127.0.0.1';
 
     for (const proc of data.pm2Processes) {
       if (proc.name === 'cajita-control-plane') continue;
@@ -707,6 +708,7 @@ async function loadProjects() {
       const role = slotInfo.appRole || (baseAppName.includes('front') || baseAppName.includes('portal') ? 'frontend' : 'backend');
       const route = slotInfo.routePath || (role === 'frontend' ? '/' : '/api/*');
       const port = slotInfo.activePort || (role === 'frontend' ? 3001 : 3004);
+      const directAppUrl = slotInfo.appUrl || `http://${lanHost}:${port}`;
       const slotColor = (slotInfo.activeColor || (proc.name.endsWith('-blue') ? 'blue' : 'green')).toUpperCase();
       const roleBadge =
         role === 'frontend'
@@ -725,13 +727,22 @@ async function loadProjects() {
               ${baseAppName} ${roleBadge}
             </div>
             <div class="app-item-meta">
-              Ruta Caddy: <strong style="color:var(--accent-mint);">${route}</strong> ·
-              Slot <strong>${slotColor} (:${port})</strong> ·
-              RAM: ${proc.memoryMb ?? 0} MB
+              Link en tu Wi-Fi: <a href="${directAppUrl}" target="_blank" rel="noopener" style="color:var(--accent-mint);font-weight:800;font-family:monospace;">${directAppUrl}</a> ·
+              Ruta: <strong>${route}</strong> ·
+              Slot <strong>${slotColor} (:${port})</strong>
             </div>
           </div>
         </div>
-        <div style="display:flex; gap:0.5rem; align-items:center;">
+        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+          <a
+            href="${directAppUrl}"
+            target="_blank"
+            rel="noopener"
+            class="btn btn-small"
+            style="text-decoration:none;"
+          >
+            🌐 Abrir Web (:${port})
+          </a>
           <button
             type="button"
             class="btn btn-secondary btn-small btn-select-app"
@@ -1015,27 +1026,31 @@ function renderTunnelInfo(tunnel) {
   if (!tunnel) return;
   const lanIp = tunnel.lanIp || window.location.hostname || '127.0.0.1';
   const lanPort = tunnel.lanPort || window.location.port || 4000;
-  const lanUrl = tunnel.lanAdminUrl || tunnel.lanUrl || `http://${lanIp}:${lanPort}`;
+  const lanAdminUrl = tunnel.lanAdminUrl || `http://${lanIp}:${lanPort}`;
+  const lanAppsGatewayUrl = tunnel.lanUrl || `http://${lanIp}:8080`;
 
   if (topLanUrl) {
-    topLanUrl.textContent = lanUrl;
-    topLanUrl.href = lanUrl;
+    topLanUrl.textContent = lanAdminUrl;
+    topLanUrl.href = lanAdminUrl;
   }
   if (topLanIpVal) topLanIpVal.textContent = lanIp;
-  if (topLanPortVal) topLanPortVal.textContent = String(lanPort);
+  if (topLanPortVal) topLanPortVal.textContent = `${lanPort} (Panel) / 8080 y 3001 (Tus Apps)`;
 
-  const pubUrl = tunnel.publicUrl || lanUrl;
+  const rawPub = tunnel.publicUrl || '';
+  const hasRealPublicUrl = rawPub.startsWith('http://') || rawPub.startsWith('https://');
+  const displayPub = rawPub || `En tu Wi-Fi: ${lanAppsGatewayUrl}`;
+
   if (topTunnelUrl) {
-    topTunnelUrl.textContent = pubUrl;
-    topTunnelUrl.href = pubUrl;
+    topTunnelUrl.textContent = displayPub;
+    topTunnelUrl.href = hasRealPublicUrl ? rawPub : lanAppsGatewayUrl;
   }
   if (topTunnelBadge) {
     topTunnelBadge.textContent =
       tunnel.mode === 'token' ? 'DOMINIO PROPIO FIJO' : 'MODO GRATIS (TryCloudflare)';
   }
-  if (tunnelPublicUrlVal) tunnelPublicUrlVal.textContent = pubUrl;
-  if (tunnelAdminUrlVal) tunnelAdminUrlVal.textContent = tunnel.adminUrl || lanUrl;
-  if (tunnelLanUrlVal) tunnelLanUrlVal.textContent = lanUrl;
+  if (tunnelPublicUrlVal) tunnelPublicUrlVal.textContent = displayPub;
+  if (tunnelAdminUrlVal) tunnelAdminUrlVal.textContent = tunnel.adminUrl || lanAdminUrl;
+  if (tunnelLanUrlVal) tunnelLanUrlVal.textContent = `${lanAppsGatewayUrl} (Apps) · ${lanAdminUrl} (Panel)`;
 }
 
 async function fetchTunnelStatus() {
