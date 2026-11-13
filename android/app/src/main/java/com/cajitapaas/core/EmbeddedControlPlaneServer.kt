@@ -1005,7 +1005,7 @@ class EmbeddedControlPlaneServer(
                 .put("bridge", bridgeJson)
                 .put(
                     "message",
-                    if (enabled) "Modo PC (DBeaver) activado en ${getDeviceLanIp()}:${EmbeddedDatabaseEngine.BRIDGE_PORT}"
+                    if (enabled) "Modo PC (DBeaver) activado en ${getDeviceLanIp()}:${EmbeddedDatabaseEngine.STANDARD_PORT}"
                     else "Modo PC (DBeaver) desactivado."
                 )
             return sendJson(out, 200, response.toString())
@@ -1130,7 +1130,8 @@ class EmbeddedControlPlaneServer(
             .put("enabled", dbEngine.isBridgeEnabled)
             .put("mode", dbEngine.bridgeMode)
             .put("host", getDeviceLanIp())
-            .put("port", EmbeddedDatabaseEngine.BRIDGE_PORT)
+            .put("port", EmbeddedDatabaseEngine.STANDARD_PORT)
+            .put("altPort", EmbeddedDatabaseEngine.BRIDGE_PORT)
             .put("database", EmbeddedDatabaseEngine.DEFAULT_DB_NAME)
             .put("user", dbEngine.getDbUser())
             .put("password", dbEngine.getDbPassword())

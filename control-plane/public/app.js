@@ -826,7 +826,7 @@ function renderBridgeStatus(rawPayload) {
     const dbActiveConnsEl = document.getElementById('dbActiveConnsVal');
 
     if (dbHostEl) dbHostEl.textContent = bridge.host || window.location.hostname || '127.0.0.1';
-    if (dbPortEl) dbPortEl.textContent = bridge.port || 13306;
+    if (dbPortEl) dbPortEl.textContent = bridge.port || 3306;
     if (dbNameEl) dbNameEl.textContent = bridge.database || 'cajitapaas';
     if (dbUserEl) dbUserEl.textContent = bridge.user || 'cajita_admin';
     if (dbPassEl) dbPassEl.textContent = bridge.password || getRawApiKey() || 'cajitapaas2026';
