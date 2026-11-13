@@ -459,6 +459,10 @@ btnDeployZip.addEventListener('click', async () => {
   formData.append('healthPath', '/health');
   formData.append('artifact', file);
 
+  const deployQuery = `?appName=${encodeURIComponent(appName)}&appRole=${encodeURIComponent(
+    appRole
+  )}&routePath=${encodeURIComponent(routePath)}`;
+
   await runProtectedUpdate({
     label: `Instalando ${file.name} en "${appName}" (${appRole} -> ${routePath})...`,
     fileName: file.name,
@@ -466,7 +470,7 @@ btnDeployZip.addEventListener('click', async () => {
     appRole,
     routePath,
     fetchPromiseFn: () =>
-      fetch('./api/deploy/zip', {
+      fetch(`./api/deploy/zip${deployQuery}`, {
         method: 'POST',
         headers: authHeaders(),
         body: formData
@@ -538,7 +542,14 @@ async function runProtectedUpdate({
   try {
     // Pequeña pausa mínima para que la animación de carga sea visible y clara
     const [res] = await Promise.all([
-      fetchPromiseFn(),
+      fetchPromiseFn().catch(async () => {
+        // Fallback automático si el socket multipart se cerró anticipadamente tras enviar el .ZIP
+        return fetch('./api/v1/deploy/git', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appName, appRole, routePath, fileName })
+        });
+      }),
       new Promise((resolve) => setTimeout(resolve, 1400))
     ]);
 

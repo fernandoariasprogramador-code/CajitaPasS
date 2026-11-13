@@ -229,14 +229,29 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ message: `Proyecto ${appName} detenido.` }));
   }
 
-  if (url.pathname === '/api/v1/deploy/git' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (chunk) => (body += chunk));
+  if (
+    (url.pathname === '/api/v1/deploy/git' ||
+      url.pathname === '/api/deploy/zip' ||
+      url.pathname === '/api/v1/deploy/zip') &&
+    req.method === 'POST'
+  ) {
+    const chunks = [];
+    req.on('data', (chunk) => {
+      if (chunks.length < 4) chunks.push(chunk);
+    });
     req.on('end', () => {
-      const payload = JSON.parse(body || '{}');
-      const appName = payload.appName || 'nueva-app';
-      const appRole = payload.appRole || 'backend';
-      const routePath = payload.routePath || (appRole === 'frontend' ? '/' : '/api/*');
+      const rawPreview = Buffer.concat(chunks).toString('utf8');
+      const payload = rawPreview.trim().startsWith('{')
+        ? JSON.parse(rawPreview || '{}')
+        : {};
+      const appName =
+        url.searchParams.get('appName') || payload.appName || 'nueva-app';
+      const appRole =
+        url.searchParams.get('appRole') || payload.appRole || 'frontend';
+      const routePath =
+        url.searchParams.get('routePath') ||
+        payload.routePath ||
+        (appRole === 'frontend' ? '/' : '/api/*');
 
       const prev = activeSlots[appName];
       const bluePort = prev ? prev.bluePort : nextFreeBasePort;

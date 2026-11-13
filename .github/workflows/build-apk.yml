@@ -64,8 +64,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk CajitaPaaS-CPS-ARM64.apk
-          gh release delete v1.0.0-latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create v1.0.0-latest CajitaPaaS-CPS-ARM64.apk \
-            --title "CPS (CajitaPaaS) Android APK — Descarga Directa" \
-            --notes "Instalador oficial APK de CPS (CajitaPaaS) para teléfonos Android (ARM64)." \
+
+          # Eliminar releases previos para mantener limpio el repositorio y evitar caché del mismo tag
+          for old_tag in $(gh release list --limit 20 --json tagName -q '.[].tagName'); do
+            gh release delete "$old_tag" --yes --cleanup-tag 2>/dev/null || true
+          done
+
+          NEW_TAG="v1.0.${{ github.run_number }}"
+          gh release create "$NEW_TAG" CajitaPaaS-CPS-ARM64.apk \
+            --target "${{ github.sha }}" \
+            --title "CPS (CajitaPaaS) Android APK — Build #${{ github.run_number }}" \
+            --notes "Instalador oficial APK de CPS (CajitaPaaS) compilado automáticamente desde el commit ${{ github.sha }}." \
             --latest

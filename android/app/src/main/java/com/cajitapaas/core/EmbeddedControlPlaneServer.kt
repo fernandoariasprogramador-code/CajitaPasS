@@ -4,8 +4,9 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -77,21 +78,24 @@ class EmbeddedControlPlaneServer(
 
     private fun handleClient(socket: Socket) {
         socket.use { client ->
-            client.soTimeout = 15000
+            client.soTimeout = 60_000
             val remoteIp = client.inetAddress?.hostAddress?.removePrefix("::ffff:") ?: ""
-            val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.UTF_8))
+            val input = BufferedInputStream(client.getInputStream(), 32 * 1024)
             val out = client.getOutputStream()
 
-            val requestLine = reader.readLine() ?: return
+            val requestLine = readHeaderLine(input) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) return
             val method = parts[0]
-            val rawPath = parts[1].substringBefore("?")
+            val fullUri = parts[1]
+            val rawPath = fullUri.substringBefore("?")
+            val rawQuery = if (fullUri.contains("?")) fullUri.substringAfter("?") else ""
+            val queryParams = parseQueryParams(rawQuery)
 
             val headers = mutableMapOf<String, String>()
-            var contentLength = 0
+            var contentLength = 0L
             while (true) {
-                val line = reader.readLine() ?: break
+                val line = readHeaderLine(input) ?: break
                 if (line.isEmpty()) break
                 val idx = line.indexOf(':')
                 if (idx > 0) {
@@ -99,47 +103,143 @@ class EmbeddedControlPlaneServer(
                     val value = line.substring(idx + 1).trim()
                     headers[key] = value
                     if (key == "content-length") {
-                        contentLength = value.toIntOrNull() ?: 0
+                        contentLength = value.toLongOrNull() ?: 0L
                     }
                 }
             }
 
-            // Si es un POST multipartgrande (.zip), leemos hasta un tope razonable o procesamos metadatos
+            // Si el navegador envía "Expect: 100-continue" antes de mandar el .ZIP, responder 100 Continue
+            if (headers["expect"]?.contains("100-continue", ignoreCase = true) == true) {
+                out.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.UTF_8))
+                out.flush()
+            }
+
+            // Leer SIEMPRE el 100% de los bytes de Content-Length en binario (ByteArray)
+            // para evitar que el kernel Android envíe un TCP RST (Connection Reset) al subir archivos .ZIP grandes
             val contentType = headers["content-type"] ?: ""
-            val body = if (contentLength > 0 && !contentType.startsWith("multipart/form-data")) {
-                val safeLen = contentLength.coerceAtMost(2 * 1024 * 1024)
-                val buf = CharArray(safeLen)
+            val isChunked = headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
+
+            val body = if (contentLength > 0L && !contentType.startsWith("multipart/form-data")) {
+                val safeLen = contentLength.coerceAtMost(2L * 1024L * 1024L).toInt()
+                val buf = ByteArray(safeLen)
                 var readTotal = 0
                 while (readTotal < safeLen) {
-                    val r = reader.read(buf, readTotal, safeLen - readTotal)
+                    val r = input.read(buf, readTotal, safeLen - readTotal)
                     if (r == -1) break
                     readTotal += r
                 }
-                String(buf, 0, readTotal)
-            } else if (contentLength > 0 && contentType.startsWith("multipart/form-data")) {
-                // Extraer los campos de texto del multipart (appName, appRole, routePath)
-                val previewLen = contentLength.coerceAtMost(64 * 1024)
-                val buf = CharArray(previewLen)
-                var readTotal = 0
-                while (readTotal < previewLen) {
-                    val r = reader.read(buf, readTotal, previewLen - readTotal)
-                    if (r == -1) break
-                    readTotal += r
+                var remaining = contentLength - readTotal
+                val discard = ByteArray(16 * 1024)
+                while (remaining > 0L) {
+                    val r = input.read(discard, 0, minOf(discard.size.toLong(), remaining).toInt())
+                    if (r <= 0) break
+                    remaining -= r
                 }
-                String(buf, 0, readTotal)
+                String(buf, 0, readTotal, Charsets.UTF_8)
+            } else if (contentLength > 0L && contentType.startsWith("multipart/form-data")) {
+                // Capturar los primeros 64KB para leer campos de texto del FormData y drenar el 100% del archivo .ZIP
+                val maxPreview = 64 * 1024
+                val previewOut = ByteArrayOutputStream(minOf(contentLength.toInt().coerceAtLeast(0), maxPreview))
+                val chunk = ByteArray(32 * 1024)
+                var remaining = contentLength
+                while (remaining > 0L) {
+                    val toRead = minOf(chunk.size.toLong(), remaining).toInt()
+                    val r = input.read(chunk, 0, toRead)
+                    if (r <= 0) break
+                    if (previewOut.size() < maxPreview) {
+                        val copyLen = minOf(r, maxPreview - previewOut.size())
+                        previewOut.write(chunk, 0, copyLen)
+                    }
+                    remaining -= r
+                }
+                String(previewOut.toByteArray(), Charsets.ISO_8859_1)
+            } else if (isChunked) {
+                drainChunkedBody(input)
             } else ""
 
             if (rawPath.startsWith("/api/")) {
-                handleApiRequest(method, rawPath, body, remoteIp, out)
+                handleApiRequest(method, rawPath, queryParams, body, remoteIp, out)
             } else {
                 serveStaticAsset(rawPath, out)
             }
+
+            // Cierre limpio TCP (RFC 7230 Sección 6.6) para evitar Connection Reset (TCP RST) en Chrome/WebView
+            runCatching { out.flush() }
+            runCatching { client.shutdownOutput() }
+            runCatching {
+                client.soTimeout = 400
+                val drain = ByteArray(1024)
+                while (input.read(drain) != -1) {
+                    // Esperar FIN del cliente
+                }
+            }
         }
+    }
+
+    private fun drainChunkedBody(input: InputStream): String {
+        val previewOut = ByteArrayOutputStream(4096)
+        val discard = ByteArray(16 * 1024)
+        while (true) {
+            val sizeLine = readHeaderLine(input)?.trim() ?: break
+            val chunkSize = sizeLine.substringBefore(";").trim().toLongOrNull(16) ?: break
+            if (chunkSize == 0L) {
+                readHeaderLine(input) // CRLF final
+                break
+            }
+            var remaining = chunkSize
+            while (remaining > 0L) {
+                val r = input.read(discard, 0, minOf(discard.size.toLong(), remaining).toInt())
+                if (r <= 0) return String(previewOut.toByteArray(), Charsets.ISO_8859_1)
+                if (previewOut.size() < 64 * 1024) {
+                    previewOut.write(discard, 0, minOf(r, 64 * 1024 - previewOut.size()))
+                }
+                remaining -= r
+            }
+            readHeaderLine(input) // CRLF tras cada chunk
+        }
+        return String(previewOut.toByteArray(), Charsets.ISO_8859_1)
+    }
+
+    /**
+     * Lee una línea de cabecera HTTP byte a byte sin usar BufferedReader(UTF-8),
+     * evitando corromper o consumir por adelantado bytes binarios del cuerpo multipart (.zip).
+     */
+    private fun readHeaderLine(input: InputStream): String? {
+        val out = ByteArrayOutputStream(128)
+        while (true) {
+            val b = input.read()
+            if (b == -1) {
+                return if (out.size() == 0) null else String(out.toByteArray(), Charsets.ISO_8859_1).trimEnd('\r')
+            }
+            if (b == '\n'.code) {
+                break
+            }
+            if (out.size() < 8192) {
+                out.write(b)
+            }
+        }
+        return String(out.toByteArray(), Charsets.ISO_8859_1).trimEnd('\r')
+    }
+
+    private fun parseQueryParams(rawQuery: String): Map<String, String> {
+        if (rawQuery.isBlank()) return emptyMap()
+        val map = mutableMapOf<String, String>()
+        for (pair in rawQuery.split("&")) {
+            if (pair.isBlank()) continue
+            val idx = pair.indexOf('=')
+            if (idx > 0) {
+                val k = runCatching { URLDecoder.decode(pair.substring(0, idx), "UTF-8") }.getOrDefault(pair.substring(0, idx))
+                val v = runCatching { URLDecoder.decode(pair.substring(idx + 1), "UTF-8") }.getOrDefault(pair.substring(idx + 1))
+                map[k] = v
+            }
+        }
+        return map
     }
 
     private fun handleApiRequest(
         method: String,
         path: String,
+        queryParams: Map<String, String>,
         body: String,
         remoteIp: String,
         out: OutputStream
@@ -266,13 +366,13 @@ class EmbeddedControlPlaneServer(
 
             if (path.endsWith("/git")) {
                 val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
-                appName = sanitizeSlug(json.optString("appName", "mi-app"))
-                appRole = json.optString("appRole", "backend")
-                routePath = json.optString("routePath", if (appRole == "frontend") "/" else "/api/*")
+                appName = sanitizeSlug(json.optString("appName", queryParams["appName"] ?: "mi-app"))
+                appRole = json.optString("appRole", queryParams["appRole"] ?: "backend")
+                routePath = json.optString("routePath", queryParams["routePath"] ?: if (appRole == "frontend") "/" else "/api/*")
             } else {
-                appName = sanitizeSlug(extractMultipartField(body, "appName") ?: "mi-app")
-                appRole = extractMultipartField(body, "appRole") ?: "frontend"
-                routePath = extractMultipartField(body, "routePath") ?: "/"
+                appName = sanitizeSlug(queryParams["appName"] ?: extractMultipartField(body, "appName") ?: "mi-app")
+                appRole = queryParams["appRole"] ?: extractMultipartField(body, "appRole") ?: "frontend"
+                routePath = queryParams["routePath"] ?: extractMultipartField(body, "routePath") ?: "/"
             }
 
             val projectsObj = loadSavedProjects()
