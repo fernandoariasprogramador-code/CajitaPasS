@@ -183,7 +183,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
                     }
                 }
             } else {
-                db.execSQL(trimmedSql)
+                val effectiveWrite = translateMysqlQueryToSqlite(trimmedSql)
+                db.execSQL(effectiveWrite)
                 cols.put("resultado")
                 rows.put(JSONObject().put("resultado", "Sentencia ejecutada correctamente en '$safeDb'"))
             }
@@ -529,25 +530,122 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             }
 
             // Consultas de escritura (CREATE TABLE, INSERT, UPDATE, DELETE, DROP)
+            val effectiveWrite = translateMysqlQueryToSqlite(clean)
             openOrCreateDatabase(currentDb).use { db ->
-                db.execSQL(clean)
+                db.execSQL(effectiveWrite)
             }
             sendOkPacket(output, startSeq)
         } catch (e: Exception) {
-            sendErrorPacket(output, startSeq, 1064, e.message ?: "Error ejecutando SQL")
+            val safeMsg = sanitizeErrorMessage(e.message)
+            sendErrorPacket(output, startSeq, 1064, safeMsg)
         }
         return currentDb
     }
 
+    private fun sanitizeErrorMessage(raw: String?): String {
+        if (raw == null) return "Error de sintaxis SQL"
+        return raw
+            .replace(Regex("(?i)android\\.database\\.sqlite\\.SQLiteException:\\s*"), "")
+            .replace(Regex("(?i)android\\.database\\.sqlite\\."), "")
+            .replace(Regex("(?i)\\bcode\\s+\\d+\\s+SQLITE_[A-Z_]+;?\\s*"), "")
+            .replace(Regex("(?i)\\bSQLITE_[A-Z_]+\\b"), "")
+            .replace(Regex("(?i)\\bsqlite\\b"), "MariaDB")
+            .replace(Regex("(?i),?\\s*while compiling:.*"), "")
+            .trim()
+    }
+
     private fun translateMysqlQueryToSqlite(sql: String): String {
-        val upper = sql.trim().uppercase()
-        if (upper == "SHOW DATABASES") {
+        var query = sql.trim()
+        val upper = query.uppercase()
+
+        if (upper == "SHOW DATABASES" || upper.startsWith("SHOW DATABASES")) {
             return "SELECT '$DEFAULT_DB_NAME' AS Database"
         }
         if (upper.startsWith("SHOW TABLES")) {
             return "SELECT name AS Tables_in_db FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'"
         }
-        return sql
+        if (upper.startsWith("DESCRIBE ") || upper.startsWith("DESC ")) {
+            val tbl = query.substringAfter(" ").trim().trim('`', '\'', '"', ';').substringAfterLast('.')
+            return "PRAGMA table_info(`$tbl`)"
+        }
+        if (upper.startsWith("SHOW COLUMNS FROM ") || upper.startsWith("SHOW FULL COLUMNS FROM ")) {
+            val tbl = query.substringAfterLast(" ").trim().trim('`', '\'', '"', ';').substringAfterLast('.')
+            return "PRAGMA table_info(`$tbl`)"
+        }
+        if (upper.startsWith("TRUNCATE TABLE ") || upper.startsWith("TRUNCATE ")) {
+            val tbl = query.substringAfterLast(" ").trim().trim(';', '`', '\'', '"')
+            return "DELETE FROM `$tbl`"
+        }
+        if (upper.startsWith("RENAME TABLE ")) {
+            query = query.replace(Regex("(?i)^RENAME\\s+TABLE\\s+([`'\"\\w]+)\\s+TO\\s+([`'\"\\w]+)"), "ALTER TABLE $1 RENAME TO $2")
+        }
+        if (upper.startsWith("ALTER TABLE")) {
+            query = query.replace(Regex("(?i)\\b(AFTER|FIRST)\\s+[`'\"\\w]+"), "")
+        }
+
+        // Reemplazar funciones de fecha y sintaxis MySQL por SQLite
+        query = query.replace(Regex("(?i)\\bNOW\\(\\s*\\)"), "datetime('now', 'localtime')")
+        query = query.replace(Regex("(?i)\\bCURRENT_TIMESTAMP\\(\\s*\\)"), "CURRENT_TIMESTAMP")
+        query = query.replace(Regex("(?i)\\bUNIX_TIMESTAMP\\(\\s*\\)"), "strftime('%s', 'now')")
+        query = query.replace(Regex("(?i)\\bCURDATE\\(\\s*\\)"), "date('now', 'localtime')")
+        query = query.replace(Regex("(?i)\\bCURTIME\\(\\s*\\)"), "time('now', 'localtime')")
+        query = query.replace(Regex("(?i)\\bINSERT\\s+IGNORE\\s+INTO\\b"), "INSERT OR IGNORE INTO")
+
+        // Transformaciones específicas para sentencias CREATE TABLE
+        if (upper.startsWith("CREATE TABLE") || upper.contains("CREATE TABLE")) {
+            // 1. Eliminar opciones de tabla al final (ENGINE=..., DEFAULT CHARSET=..., AUTO_INCREMENT=..., COLLATE=...)
+            query = query.replace(Regex("(?i)\\)\\s*(ENGINE|DEFAULT|CHARSET|COLLATE|AUTO_INCREMENT|ROW_FORMAT)[^;]*;?$"), ");")
+            query = query.replace(Regex("(?i)\\bENGINE\\s*=\\s*[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\bAUTO_INCREMENT\\s*=\\s*\\d+"), "")
+            query = query.replace(Regex("(?i)\\bROW_FORMAT\\s*=\\s*[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\bDEFAULT\\s+CHARSET\\s*=\\s*[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\bDEFAULT\\s+COLLATE\\s*=\\s*[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\b(CHARACTER\\s+SET|CHARSET)\\s+[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\b(CHARACTER\\s+SET|CHARSET)\\s*=\\s*[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\bCOLLATE\\s+[a-zA-Z0-9_]+"), "")
+            query = query.replace(Regex("(?i)\\bCOLLATE\\s*=\\s*[a-zA-Z0-9_]+"), "")
+
+            // 2. Limpiar comentarios MySQL tipo COMMENT '...' en columnas
+            query = query.replace(Regex("(?i)\\bCOMMENT\\s+'[^']*'"), "")
+
+            // 3. Limpiar cláusulas de ON UPDATE en columnas TIMESTAMP
+            query = query.replace(Regex("(?i)\\bON\\s+UPDATE\\s+(CURRENT_TIMESTAMP|NOW\\(\\))(\\(\\s*\\))?"), "")
+
+            // 4. Limpiar UNSIGNED y ZEROFILL
+            query = query.replace(Regex("(?i)\\bUNSIGNED\\b"), "")
+            query = query.replace(Regex("(?i)\\bZEROFILL\\b"), "")
+
+            // 5. Eliminar definiciones KEY / INDEX dentro del CREATE TABLE (SQLite solo las permite fuera con CREATE INDEX)
+            query = query.replace(Regex("(?i),\\s*UNIQUE\\s+(KEY|INDEX)\\s+[a-zA-Z0-9_`'\"]*\\s*\\(([^\\)]+)\\)"), ", UNIQUE ($2)")
+            query = query.replace(Regex("(?i),\\s*(KEY|INDEX|FULLTEXT\\s+KEY|SPATIAL\\s+KEY)\\s+[a-zA-Z0-9_`'\"]*\\s*\\([^\\)]+\\)"), "")
+
+            // 6. Eliminar PRIMARY KEY redundante si hay columna AUTO_INCREMENT
+            val autoIncColMatch = Regex("(?i)[`\"']?([a-zA-Z0-9_]+)[`\"']?\\s+(BIGINT|INT|INTEGER|MEDIUMINT|SMALLINT|TINYINT)[^,]*AUTO_INCREMENT").find(query)
+            if (autoIncColMatch != null) {
+                val colName = autoIncColMatch.groups[1]?.value ?: ""
+                if (colName.isNotEmpty()) {
+                    query = query.replace(Regex("(?i),\\s*PRIMARY\\s+KEY\\s*\\(\\s*[`\"']?" + Regex.escape(colName) + "[`\"']?\\s*\\)"), "")
+                }
+            }
+
+            // 7. Transformar AUTO_INCREMENT para SQLite (debe ser INTEGER PRIMARY KEY AUTOINCREMENT)
+            query = query.replace(Regex("(?i)\\b(BIGINT|INT|MEDIUMINT|SMALLINT|TINYINT)(\\s*\\(\\s*\\d+\\s*\\))?(\\s+NOT\\s+NULL)?\\s+AUTO_INCREMENT\\s+PRIMARY\\s+KEY"), "INTEGER PRIMARY KEY AUTOINCREMENT")
+            query = query.replace(Regex("(?i)\\b(BIGINT|INT|MEDIUMINT|SMALLINT|TINYINT)(\\s*\\(\\s*\\d+\\s*\\))?\\s+PRIMARY\\s+KEY\\s+AUTO_INCREMENT"), "INTEGER PRIMARY KEY AUTOINCREMENT")
+            query = query.replace(Regex("(?i)\\b(BIGINT|INT|MEDIUMINT|SMALLINT|TINYINT)(\\s*\\(\\s*\\d+\\s*\\))?\\s+AUTO_INCREMENT"), "INTEGER PRIMARY KEY AUTOINCREMENT")
+            query = query.replace(Regex("(?i)\\bAUTO_INCREMENT\\b"), "AUTOINCREMENT")
+
+            // 8. Mapear tipos de datos MySQL a SQLite
+            query = query.replace(Regex("(?i)\\b(LONGTEXT|MEDIUMTEXT|TINYTEXT|JSON)\\b"), "TEXT")
+            query = query.replace(Regex("(?i)\\b(LONGBLOB|MEDIUMBLOB|TINYBLOB)\\b"), "BLOB")
+            query = query.replace(Regex("(?i)\\bENUM\\s*\\([^\\)]+\\)"), "TEXT")
+            query = query.replace(Regex("(?i)\\b(DATETIME|TIMESTAMP)\\b"), "TEXT")
+            query = query.replace(Regex("(?i)\\bVARCHAR\\s*\\(\\s*\\d+\\s*\\)"), "TEXT")
+            query = query.replace(Regex("(?i)\\bCHAR\\s*\\(\\s*\\d+\\s*\\)"), "TEXT")
+            query = query.replace(Regex("(?i)\\bDOUBLE(\\s*PRECISION)?\\b"), "REAL")
+            query = query.replace(Regex("(?i)\\bFLOAT\\b"), "REAL")
+        }
+
+        return query
     }
 
     private data class MysqlPacket(val seqId: Int, val payload: ByteArray)
