@@ -708,7 +708,14 @@ async function loadProjects() {
       const role = slotInfo.appRole || (baseAppName.includes('front') || baseAppName.includes('portal') ? 'frontend' : 'backend');
       const route = slotInfo.routePath || (role === 'frontend' ? '/' : '/api/*');
       const port = slotInfo.activePort || (role === 'frontend' ? 3001 : 3004);
-      const directAppUrl = slotInfo.appUrl || `http://${lanHost}:${port}`;
+      const isWebFront = role === 'frontend' || role === 'fullstack';
+      const primaryUrl = isWebFront
+        ? slotInfo.gatewayUrl || `http://${lanHost}:8080`
+        : slotInfo.directPortUrl || slotInfo.appUrl || `http://${lanHost}:${port}`;
+      const secondaryNote = isWebFront
+        ? `(También en :${port})`
+        : `(Proxy en :8080${route.replace(/\*$/, '')})`;
+      const btnOpenLabel = isWebFront ? '🌐 Abrir Página Web (:8080)' : `🔌 Abrir API (:${port})`;
       const slotColor = (slotInfo.activeColor || (proc.name.endsWith('-blue') ? 'blue' : 'green')).toUpperCase();
       const roleBadge =
         role === 'frontend'
@@ -727,21 +734,22 @@ async function loadProjects() {
               ${baseAppName} ${roleBadge}
             </div>
             <div class="app-item-meta">
-              Link en tu Wi-Fi: <a href="${directAppUrl}" target="_blank" rel="noopener" style="color:var(--accent-mint);font-weight:800;font-family:monospace;">${directAppUrl}</a> ·
+              URL Principal: <a href="${primaryUrl}" target="_blank" rel="noopener" style="color:var(--accent-mint);font-weight:800;font-family:monospace;">${primaryUrl}</a>
+              <span style="opacity:0.8;">${secondaryNote}</span> ·
               Ruta: <strong>${route}</strong> ·
-              Slot <strong>${slotColor} (:${port})</strong>
+              Slot <strong>${slotColor}</strong>
             </div>
           </div>
         </div>
         <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
           <a
-            href="${directAppUrl}"
+            href="${primaryUrl}"
             target="_blank"
             rel="noopener"
             class="btn btn-small"
             style="text-decoration:none;"
           >
-            🌐 Abrir Web (:${port})
+            ${btnOpenLabel}
           </a>
           <button
             type="button"

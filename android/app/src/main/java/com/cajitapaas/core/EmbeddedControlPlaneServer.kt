@@ -325,15 +325,92 @@ class EmbeddedControlPlaneServer(
         }
 
         if (targetFile.exists() && targetFile.isFile) {
-            val bytes = targetFile.readBytes()
             val mime = resolveMimeType(targetFile.name)
-            val header = "HTTP/1.1 200 OK\r\nContent-Type: $mime\r\nContent-Length: ${bytes.size}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+            val bytes = if (mime.startsWith("text/html")) {
+                injectCpsApiBridgeIntoHtml(targetFile.readText(Charsets.UTF_8)).toByteArray(Charsets.UTF_8)
+            } else {
+                targetFile.readBytes()
+            }
+            val header = buildString {
+                append("HTTP/1.1 200 OK\r\n")
+                append("Content-Type: $mime\r\n")
+                append("Content-Length: ${bytes.size}\r\n")
+                append("Access-Control-Allow-Origin: *\r\n")
+                append("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n")
+                append("Access-Control-Allow-Headers: *\r\n")
+                append("Cache-Control: no-cache\r\n")
+                append("Connection: close\r\n\r\n")
+            }
             out.write(header.toByteArray(Charsets.UTF_8))
             out.write(bytes)
         } else {
             val notFoundMsg = "Archivo no encontrado en '$appName': /$cleanRel".toByteArray(Charsets.UTF_8)
             out.write("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${notFoundMsg.size}\r\nConnection: close\r\n\r\n".toByteArray())
             out.write(notFoundMsg)
+        }
+    }
+
+    /**
+     * Inyecta automáticamente en el HTML del Frontend el puente de descubrimiento de API (`window.CPS_API_URL`).
+     * Si el Frontend tenía hardcodeado `http://localhost:3000` o `http://127.0.0.1:3001`,
+     * redirige de forma transparente esas peticiones `fetch` / `XMLHttpRequest` hacia la IP real del celular
+     * (en Wi-Fi) o hacia la ruta `/api` del Gateway `:8080` (en el Túnel HTTPS de Cloudflare).
+     */
+    private fun injectCpsApiBridgeIntoHtml(rawHtml: String): String {
+        val projects = loadSavedProjects()
+        var backendPort = 3001
+        var backendRoute = "/api"
+        val keys = projects.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val info = projects.optJSONObject(k) ?: continue
+            if (info.optString("appRole") == "backend") {
+                backendPort = info.optInt("activePort", 3001)
+                backendRoute = info.optString("routePath", "/api/*").removeSuffix("*").removeSuffix("/").ifEmpty { "/api" }
+                break
+            }
+        }
+
+        val bridgeScript = """
+            <script>
+            (function(){
+              var isHttpsTunnel = window.location.protocol === 'https:';
+              var host = window.location.hostname;
+              window.CPS_API_PORT = $backendPort;
+              window.CPS_API_URL = isHttpsTunnel ? (window.location.origin + '$backendRoute') : ('http://' + host + ':$backendPort');
+              window.CPS_GATEWAY_API_URL = window.location.origin + '$backendRoute';
+              function rewriteLocalUrl(u) {
+                if (typeof u !== 'string') return u;
+                var m = u.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i);
+                if (!m) return u;
+                var path = m[3] || '/';
+                if (isHttpsTunnel) {
+                  return path.indexOf('$backendRoute') === 0 ? path : ('$backendRoute' + path);
+                }
+                return 'http://' + host + ':$backendPort' + path;
+              }
+              if (window.fetch) {
+                var origFetch = window.fetch;
+                window.fetch = function(input, init) {
+                  if (typeof input === 'string') input = rewriteLocalUrl(input);
+                  return origFetch.call(this, input, init);
+                };
+              }
+              if (window.XMLHttpRequest) {
+                var origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                  arguments[1] = rewriteLocalUrl(url);
+                  return origOpen.apply(this, arguments);
+                };
+              }
+            })();
+            </script>
+        """.trimIndent()
+
+        return if (rawHtml.contains("<head>", ignoreCase = true)) {
+            rawHtml.replaceFirst(Regex("(?i)<head>"), "<head>\n$bridgeScript")
+        } else {
+            "$bridgeScript\n$rawHtml"
         }
     }
 
@@ -718,9 +795,20 @@ class EmbeddedControlPlaneServer(
             while (keys.hasNext()) {
                 val appName = keys.next()
                 val info = projectsObj.optJSONObject(appName) ?: continue
+                val appRole = info.optString("appRole", "frontend")
                 val appPort = info.optInt("activePort", 3001)
-                info.put("appUrl", "http://$lanIp:$appPort")
-                info.put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT${info.optString("routePath", "/").removeSuffix("*")}")
+                val cleanRoute = info.optString("routePath", "/").removeSuffix("*")
+
+                // Si es Frontend o Monolítico (Fullstack), su URL principal es el puerto 8080 (y 80 con Root).
+                // Si es Backend API, se expone en su puerto exclusivo (:3001, :3003...) y también en :8080/api/
+                val primaryUrl = if (appRole == "frontend" || appRole == "fullstack") {
+                    "http://$lanIp:$GATEWAY_PORT$cleanRoute"
+                } else {
+                    "http://$lanIp:$appPort"
+                }
+                info.put("appUrl", primaryUrl)
+                info.put("directPortUrl", "http://$lanIp:$appPort")
+                info.put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT$cleanRoute")
                 activeSlots.put(appName, info)
 
                 val color = info.optString("activeColor", "blue")
@@ -826,14 +914,21 @@ class EmbeddedControlPlaneServer(
             startDedicatedAppServer(appName, candidatePort)
 
             val lanIp = getDeviceLanIp()
+            val cleanRoute = routePath.removeSuffix("*")
+            val primaryUrl = if (appRole == "frontend" || appRole == "fullstack") {
+                "http://$lanIp:$GATEWAY_PORT$cleanRoute"
+            } else {
+                "http://$lanIp:$candidatePort"
+            }
             val slotInfo = JSONObject()
                 .put("appRole", appRole)
                 .put("routePath", routePath)
                 .put("activeColor", nextColor)
                 .put("activePort", candidatePort)
                 .put("filesExtracted", filesExtracted)
-                .put("appUrl", "http://$lanIp:$candidatePort")
-                .put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT${routePath.removeSuffix("*")}")
+                .put("appUrl", primaryUrl)
+                .put("directPortUrl", "http://$lanIp:$candidatePort")
+                .put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT$cleanRoute")
                 .put("pid", 4200 + (projectsObj.length() * 17))
                 .put("memoryMb", if (appRole == "frontend") 38 else 54)
 
