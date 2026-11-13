@@ -29,6 +29,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
     companion object {
         private const val TAG = "CPSDatabaseEngine"
+        const val STANDARD_PORT = 3306
         const val BRIDGE_PORT = 13306
         const val DEFAULT_DB_USER = "cajita_admin"
         const val DEFAULT_DB_PASS = "cajitapaas2026"
@@ -45,6 +46,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
     private val executor = Executors.newCachedThreadPool()
     private var bridgeServerSocket: ServerSocket? = null
+    private var standardServerSocket: ServerSocket? = null
 
     @Volatile
     var isBridgeEnabled: Boolean = false
@@ -229,6 +231,22 @@ class EmbeddedDatabaseEngine(private val context: Context) {
                 }
             }
         }
+
+        // También escuchar en el puerto nativo 3306 si está libre para que DBeaver conecte sin cambiar el puerto por defecto
+        thread(name = "CPS-DBeaver-Bridge-3306") {
+            try {
+                val stdServer = ServerSocket(STANDARD_PORT, 50, InetAddress.getByName("0.0.0.0"))
+                standardServerSocket = stdServer
+                Log.i(TAG, "Puente TCP MariaDB estándar escuchando en 0.0.0.0:$STANDARD_PORT")
+
+                while (isBridgeEnabled && !stdServer.isClosed) {
+                    val client = stdServer.accept() ?: break
+                    executor.execute { handleBridgeClient(client) }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Puerto estándar 3306 no disponible en 0.0.0.0 (en uso o restringido): ${e.message}")
+            }
+        }
     }
 
     @Synchronized
@@ -236,6 +254,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         isBridgeEnabled = false
         runCatching { bridgeServerSocket?.close() }
         bridgeServerSocket = null
+        runCatching { standardServerSocket?.close() }
+        standardServerSocket = null
         for (sock in openSockets) {
             runCatching { sock.close() }
         }
