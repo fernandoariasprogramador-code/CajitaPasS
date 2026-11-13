@@ -32,6 +32,7 @@ class PaaSRuntimeService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var runtimeProcess: Process? = null
     private var cloudflaredProcess: Process? = null
+    private var tunnelJob: Job? = null
     private var embeddedServer: EmbeddedControlPlaneServer? = null
     private var networkFailoverManager: NetworkFailoverManager? = null
 
@@ -70,7 +71,14 @@ class PaaSRuntimeService : Service() {
         }
         serviceScope.launch {
             configureRootPort80AndDnsIfAvailable()
-            startBuiltInCloudflaredTunnel()
+        }
+        ensureTunnelRunning()
+    }
+
+    private fun ensureTunnelRunning() {
+        if (tunnelJob?.isActive == true) return
+        tunnelJob = serviceScope.launch {
+            startBuiltInCloudflaredTunnelLoop()
         }
     }
 
@@ -128,8 +136,6 @@ class PaaSRuntimeService : Service() {
     }
 
     private fun restartTunnelBlocking(mode: String, token: String, customDomain: String): String? {
-        runCatching { cloudflaredProcess?.destroyForcibly() }
-        cloudflaredProcess = null
         embeddedServer?.publicTunnelUrl = null
         embeddedServer?.tunnelStatus = "connecting"
         embeddedServer?.tunnelLastError = null
@@ -140,8 +146,12 @@ class PaaSRuntimeService : Service() {
             embeddedServer?.tunnelStatus = "online"
         }
 
-        serviceScope.launch {
-            startBuiltInCloudflaredTunnel()
+        tunnelJob?.cancel()
+        runCatching { cloudflaredProcess?.destroyForcibly() }
+        cloudflaredProcess = null
+
+        tunnelJob = serviceScope.launch {
+            startBuiltInCloudflaredTunnelLoop()
         }
 
         // Esperar hasta 8 segundos si es Quick Tunnel a que cloudflared publique la nueva URL *.trycloudflare.com
@@ -155,7 +165,7 @@ class PaaSRuntimeService : Service() {
         return embeddedServer?.publicTunnelUrl
     }
 
-    private suspend fun startBuiltInCloudflaredTunnel() {
+    private suspend fun startBuiltInCloudflaredTunnelLoop() {
         withContext(Dispatchers.IO) {
             val cloudflaredBin = File(applicationInfo.nativeLibraryDir, "libcloudflared.so")
             if (!cloudflaredBin.exists()) {
@@ -163,80 +173,93 @@ class PaaSRuntimeService : Service() {
                 return@withContext
             }
 
-            val prefs = getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE)
-            val mode = prefs.getString("tunnel_mode", "quick") ?: "quick"
-            val savedToken = prefs.getString("tunnel_token", "")?.trim().orEmpty()
-            val savedDomain = prefs.getString("tunnel_custom_domain", "")?.trim().orEmpty()
-
             val caBundle = prepareAndroidCaBundle()
 
-            try {
-                runCatching { cloudflaredProcess?.destroyForcibly() }
+            while (serviceScope.isActive) {
+                val prefs = getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE)
+                val mode = prefs.getString("tunnel_mode", "quick") ?: "quick"
+                val savedToken = prefs.getString("tunnel_token", "")?.trim().orEmpty()
+                val savedDomain = prefs.getString("tunnel_custom_domain", "")?.trim().orEmpty()
 
-                val args = if (mode == "token" && savedToken.isNotEmpty()) {
-                    if (savedDomain.isNotEmpty()) {
-                        val clean = savedDomain.replace(Regex("^https?://"), "").trimEnd('/')
-                        embeddedServer?.publicTunnelUrl = "https://$clean"
-                        embeddedServer?.tunnelStatus = "online"
-                    }
-                    listOf(
-                        cloudflaredBin.absolutePath,
-                        "tunnel",
-                        "--no-autoupdate",
-                        "--protocol",
-                        "http2",
-                        "--edge-ip-version",
-                        "4",
-                        "run",
-                        "--token",
-                        savedToken
-                    )
-                } else {
-                    embeddedServer?.tunnelStatus = "connecting"
-                    listOf(
-                        cloudflaredBin.absolutePath,
-                        "tunnel",
-                        "--no-autoupdate",
-                        "--protocol",
-                        "http2",
-                        "--edge-ip-version",
-                        "4",
-                        "--url",
-                        "http://127.0.0.1:${EmbeddedControlPlaneServer.GATEWAY_PORT}"
-                    )
-                }
+                try {
+                    runCatching { cloudflaredProcess?.destroyForcibly() }
 
-                val pb = ProcessBuilder(args).redirectErrorStream(true)
-                val env = pb.environment()
-                env["HOME"] = filesDir.absolutePath
-                env["SSL_CERT_DIR"] = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
-                if (caBundle != null) {
-                    env["SSL_CERT_FILE"] = caBundle.absolutePath
-                }
-
-                cloudflaredProcess = pb.start()
-
-                val regex = Regex("https://[a-zA-Z0-9-]+\\.trycloudflare\\.com")
-                cloudflaredProcess?.inputStream?.bufferedReader()?.useLines { lines ->
-                    lines.forEach { line ->
-                        Log.d(TAG, "[cloudflared] $line")
-                        val match = regex.find(line)
-                        if (match != null) {
-                            val publicUrl = match.value
-                            embeddedServer?.publicTunnelUrl = publicUrl
+                    val args = if (mode == "token" && savedToken.isNotEmpty()) {
+                        if (savedDomain.isNotEmpty()) {
+                            val clean = savedDomain.replace(Regex("^https?://"), "").trimEnd('/')
+                            embeddedServer?.publicTunnelUrl = "https://$clean"
                             embeddedServer?.tunnelStatus = "online"
-                            embeddedServer?.tunnelLastError = null
-                            updateNotification("Online: $publicUrl")
-                            Log.i(TAG, "Túnel Cloudflare activo en: $publicUrl")
-                        } else if (line.contains("ERR", ignoreCase = true) || line.contains("failed", ignoreCase = true)) {
-                            embeddedServer?.tunnelLastError = line.take(160)
+                        }
+                        listOf(
+                            cloudflaredBin.absolutePath,
+                            "tunnel",
+                            "--no-autoupdate",
+                            "--protocol",
+                            "http2",
+                            "--edge-ip-version",
+                            "4",
+                            "run",
+                            "--token",
+                            savedToken
+                        )
+                    } else {
+                        embeddedServer?.tunnelStatus = "connecting"
+                        listOf(
+                            cloudflaredBin.absolutePath,
+                            "tunnel",
+                            "--no-autoupdate",
+                            "--protocol",
+                            "http2",
+                            "--edge-ip-version",
+                            "4",
+                            "--url",
+                            "http://127.0.0.1:${EmbeddedControlPlaneServer.GATEWAY_PORT}"
+                        )
+                    }
+
+                    val pb = ProcessBuilder(args).redirectErrorStream(true)
+                    val env = pb.environment()
+                    env["HOME"] = filesDir.absolutePath
+                    env["SSL_CERT_DIR"] = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
+                    if (caBundle != null) {
+                        env["SSL_CERT_FILE"] = caBundle.absolutePath
+                    }
+
+                    val proc = pb.start()
+                    cloudflaredProcess = proc
+
+                    val regex = Regex("https://[a-zA-Z0-9-]+\\.trycloudflare\\.com")
+                    proc.inputStream?.bufferedReader()?.useLines { lines ->
+                        lines.forEach { line ->
+                            Log.d(TAG, "[cloudflared] $line")
+                            val match = regex.find(line)
+                            if (match != null) {
+                                val publicUrl = match.value
+                                embeddedServer?.publicTunnelUrl = publicUrl
+                                embeddedServer?.tunnelStatus = "online"
+                                embeddedServer?.tunnelLastError = null
+                                updateNotification("Online: $publicUrl")
+                                Log.i(TAG, "Túnel Cloudflare activo en: $publicUrl")
+                            } else if (line.contains("ERR", ignoreCase = true) || line.contains("failed", ignoreCase = true)) {
+                                embeddedServer?.tunnelLastError = line.take(160)
+                            }
                         }
                     }
+
+                    val exitCode = proc.waitFor()
+                    Log.w(TAG, "Proceso Cloudflared terminó con código $exitCode. Reiniciando túnel en 3s...")
+                    embeddedServer?.tunnelStatus = "reconnecting"
+                    if (mode != "token") {
+                        embeddedServer?.publicTunnelUrl = null
+                    }
+                } catch (e: Exception) {
+                    embeddedServer?.tunnelStatus = "error"
+                    embeddedServer?.tunnelLastError = e.message
+                    Log.e(TAG, "Error en bucle de túnel Cloudflared", e)
                 }
-            } catch (e: Exception) {
-                embeddedServer?.tunnelStatus = "error"
-                embeddedServer?.tunnelLastError = e.message
-                Log.e(TAG, "Error iniciando túnel Cloudflared integrado", e)
+
+                if (!serviceScope.isActive) break
+                delay(3000L)
             }
         }
     }
@@ -362,10 +385,12 @@ class PaaSRuntimeService : Service() {
     }
 
     override fun onDestroy() {
+        tunnelJob?.cancel()
         networkFailoverManager?.stopMonitoring()
         serviceJob.cancel()
         embeddedServer?.stop()
-        cloudflaredProcess?.destroy()
+        runCatching { cloudflaredProcess?.destroyForcibly() }
+        cloudflaredProcess = null
         runtimeProcess?.destroy()
         wakeLock?.let { if (it.isHeld) it.release() }
         wifiLock?.let { if (it.isHeld) it.release() }
