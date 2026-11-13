@@ -53,6 +53,7 @@ jobs:
       - name: 5. Compilar APK (CajitaPaaS ARM64)
         working-directory: ./android
         run: |
+          set -o pipefail
           /tmp/gradle-dist/gradle-8.9/bin/gradle assembleDebug --no-daemon --stacktrace --console=plain 2>&1 | tee /tmp/gradle_build.log || {
             echo "::error title=Gradle Build Failed::Error durante la compilación en Gradle"
             echo "## ❌ Error de Compilación en Gradle" >> $GITHUB_STEP_SUMMARY
@@ -63,18 +64,29 @@ jobs:
             exit 1
           }
 
+          echo "## ✅ Compilación en Gradle Exitosa" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          find app/build/outputs/apk -type f -name "*.apk" | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - name: 6. Publicar APK lista para descargar e instalar en el celular
         uses: actions/upload-artifact@v4
         with:
           name: CajitaPaaS-CPS-ARM64-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
       - name: 7. Publicar enlace de descarga directa (.apk) en GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk CajitaPaaS-CPS-ARM64.apk
+          APK_PATH=$(find android/app/build/outputs/apk/debug -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "::error title=APK Not Found::No se encontró el archivo APK compilado en android/app/build/outputs/apk/debug"
+            exit 1
+          fi
+          echo "Encontrado APK para release: $APK_PATH"
+          cp "$APK_PATH" CajitaPaaS-CPS-ARM64.apk
 
           # Eliminar releases previos para mantener limpio el repositorio y evitar caché del mismo tag
           for old_tag in $(gh release list --limit 20 --json tagName -q '.[].tagName'); do

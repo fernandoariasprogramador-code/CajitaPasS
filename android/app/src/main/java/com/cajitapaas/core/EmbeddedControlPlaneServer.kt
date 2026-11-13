@@ -1185,7 +1185,7 @@ class EmbeddedControlPlaneServer(
             out.write(header.toByteArray(Charsets.UTF_8))
             out.write(bytes)
             out.flush()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             val notFound = "404 Not Found".toByteArray()
             out.write("HTTP/1.1 404 Not Found\r\nContent-Length: ${notFound.size}\r\n\r\n".toByteArray())
             out.write(notFound)
@@ -1236,7 +1236,7 @@ class EmbeddedControlPlaneServer(
             }
 
             candidates.maxByOrNull { it.first }?.second ?: "127.0.0.1"
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             "127.0.0.1"
         }
     }
