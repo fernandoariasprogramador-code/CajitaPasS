@@ -6,7 +6,7 @@
 # ==============================================================================
 set -ex
 
-apk add --no-cache mariadb mariadb-client mariadb-common zip
+apk add --no-cache mariadb mariadb-client mariadb-common alpine-keys zip
 
 JNI_DIR="/workspace/android/app/src/main/jniLibs/arm64-v8a"
 ASSETS_DIR="/workspace/android/app/src/main/assets"
@@ -21,7 +21,7 @@ mkdir -p "$JNI_DIR" "$ASSETS_DIR"
 mkdir -p "$ARM64_ROOT/etc/apk"
 cp /etc/apk/repositories "$ARM64_ROOT/etc/apk/"
 cp -r /etc/apk/keys "$ARM64_ROOT/etc/apk/"
-apk --arch aarch64 --root "$ARM64_ROOT" --initdb --no-scripts add musl mariadb mariadb-client
+apk --arch aarch64 --root "$ARM64_ROOT" --initdb --no-scripts --allow-untrusted add musl mariadb mariadb-client
 
 # 2. Copiar linker musl y ejecutables ARM64 de MariaDB con nombres válidos para Android APK (lib*.so)
 cp -L "$ARM64_ROOT/lib/ld-musl-aarch64.so.1" "$JNI_DIR/libalpine_musl.so"
@@ -65,43 +65,38 @@ if [ -d /usr/share/mariadb/spanish ]; then
   cp -r /usr/share/mariadb/spanish "$STAGE_DIR/share/"
 fi
 
-# 5. Generar configuración my.cnf para inicialización limpia del datadir
-cat <<EOF > "$STAGE_DIR/my.cnf"
-[mysqld]
-datadir=$STAGE_DIR/data
-lc-messages-dir=$STAGE_DIR/share
-character-sets-dir=$STAGE_DIR/share/charsets
-tmpdir=$STAGE_DIR/tmp
-socket=$STAGE_DIR/tmp/mysql.sock
-pid-file=$STAGE_DIR/tmp/mariadbd.pid
-port=13307
-bind-address=127.0.0.1
-skip-networking=0
-skip-name-resolve
-innodb-data-file-path=ibdata1:12M:autoextend
-innodb-log-file-size=8M
-innodb-buffer-pool-size=32M
-loose-innodb-use-native-aio=0
-innodb-flush-method=fsync
-character-set-server=utf8mb4
-collation-server=utf8mb4_general_ci
-default-storage-engine=InnoDB
-EOF
-
-# 6. Inicializar datadir oficial de MariaDB Alpine
+# 5. Inicializar datadir oficial de MariaDB Alpine
 mariadb-install-db \
-  --defaults-file="$STAGE_DIR/my.cnf" \
+  --no-defaults \
   --user=root \
   --basedir=/usr \
   --datadir="$STAGE_DIR/data" \
   --auth-root-authentication-method=normal \
   --skip-test-db \
-  --verbose
+  --innodb-data-file-path=ibdata1:12M:autoextend \
+  --innodb-log-file-size=8M \
+  --innodb-use-native-aio=0
 
-# 7. Iniciar mariadbd para configurar usuarios DBA (cajita_admin y root) y base cajitapaas
+# 6. Iniciar mariadbd para configurar usuarios DBA (cajita_admin y root) y base cajitapaas
 /usr/bin/mariadbd \
-  --defaults-file="$STAGE_DIR/my.cnf" \
-  --user=root &
+  --no-defaults \
+  --user=root \
+  --datadir="$STAGE_DIR/data" \
+  --tmpdir="$STAGE_DIR/tmp" \
+  --socket="$STAGE_DIR/tmp/mysql.sock" \
+  --pid-file="$STAGE_DIR/tmp/mariadbd.pid" \
+  --port=13307 \
+  --bind-address=127.0.0.1 \
+  --skip-networking=0 \
+  --skip-name-resolve \
+  --innodb-data-file-path=ibdata1:12M:autoextend \
+  --innodb-log-file-size=8M \
+  --innodb-buffer-pool-size=32M \
+  --innodb-use-native-aio=0 \
+  --innodb-flush-method=fsync \
+  --character-set-server=utf8mb4 \
+  --collation-server=utf8mb4_general_ci \
+  --default-storage-engine=InnoDB &
 MDB_PID=$!
 
 SOCKET_READY=0
@@ -175,7 +170,7 @@ SQL_EOF
 wait "$MDB_PID" || true
 rm -rf "$STAGE_DIR/tmp"/* "$STAGE_DIR/data/"*.pid "$STAGE_DIR/data/"*.err
 
-# 8. Empaquetar datadir, share y libs_map.txt en mariadb_alpine_bundle.zip
+# 7. Empaquetar datadir, share y libs_map.txt en mariadb_alpine_bundle.zip
 cd "$STAGE_DIR"
 zip -r -9 "$ASSETS_DIR/mariadb_alpine_bundle.zip" data share libs_map.txt
 

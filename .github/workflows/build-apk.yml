@@ -60,7 +60,7 @@ jobs:
           docker run --rm \
             -v "$PWD:/workspace" \
             alpine:3.20 /bin/sh /workspace/scripts/build_mariadb_alpine_arm64.sh 2>&1 | tee /tmp/alpine_mdb.log || {
-              tail -n 30 /tmp/alpine_mdb.log | while IFS= read -r l; do
+              tail -n 9 /tmp/alpine_mdb.log | while IFS= read -r l; do
                 [ -n "$l" ] && echo "::error title=MariaDB-Alpine::$l"
               done
               exit 1
