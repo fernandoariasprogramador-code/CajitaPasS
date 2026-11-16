@@ -265,9 +265,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             innodb-data-file-path=ibdata1:12M:autoextend
             innodb-log-file-size=8M
             innodb-buffer-pool-size=32M
-            innodb-use-native-aio=0
+            loose-innodb-use-native-aio=0
             innodb-flush-method=fsync
-            performance-schema=OFF
             max-connections=60
             max-allowed-packet=64M
             character-set-server=utf8mb4
