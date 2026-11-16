@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -16,6 +17,11 @@ import androidx.core.app.NotificationCompat
 import com.cajitapaas.R
 import kotlinx.coroutines.*
 import java.io.File
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 
 class PaaSRuntimeService : Service() {
 
@@ -33,13 +39,19 @@ class PaaSRuntimeService : Service() {
     private var runtimeProcess: Process? = null
     private var cloudflaredProcess: Process? = null
     private var tunnelJob: Job? = null
+    private var keepAliveJob: Job? = null
     private var embeddedServer: EmbeddedControlPlaneServer? = null
     private var networkFailoverManager: NetworkFailoverManager? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Inicializando motor PaaS..."))
+        val initialNotif = buildNotification("Inicializando motor PaaS...")
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIFICATION_ID, initialNotif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, initialNotif)
+        }
         acquireHardwareLocks()
         networkFailoverManager = NetworkFailoverManager(
             context = applicationContext,
@@ -73,6 +85,35 @@ class PaaSRuntimeService : Service() {
             configureRootPort80AndDnsIfAvailable()
         }
         ensureTunnelRunning()
+        ensureKeepAliveRunning()
+    }
+
+    private fun ensureKeepAliveRunning() {
+        if (keepAliveJob?.isActive == true) return
+        keepAliveJob = serviceScope.launch {
+            while (isActive) {
+                runCatching {
+                    if (wakeLock?.isHeld != true) wakeLock?.acquire()
+                    if (wifiLock?.isHeld != true) wifiLock?.acquire()
+                    embeddedServer?.start()
+
+                    // Pulso local y hacia el gateway Wi-Fi para evitar que el chip wlan0 entre en PS-Poll al apagar la pantalla
+                    Socket().use { s ->
+                        s.connect(InetSocketAddress("127.0.0.1", 4000), 400)
+                    }
+                    val lanIp = embeddedServer?.getDeviceLanIp() ?: ""
+                    if (lanIp.startsWith("192.168.") || lanIp.startsWith("10.")) {
+                        val gatewayIp = lanIp.substringBeforeLast(".") + ".1"
+                        DatagramSocket().use { ds ->
+                            ds.soTimeout = 200
+                            val pkt = DatagramPacket(byteArrayOf(0), 1, InetAddress.getByName(gatewayIp), 53)
+                            ds.send(pkt)
+                        }
+                    }
+                }
+                delay(5000L)
+            }
+        }
     }
 
     private fun ensureTunnelRunning() {
@@ -91,6 +132,11 @@ class PaaSRuntimeService : Service() {
         withContext(Dispatchers.IO) {
             runCatching {
                 val cmd = buildString {
+                    append("dumpsys deviceidle whitelist +com.cajitapaas 2>/dev/null || true; ")
+                    append("cmd appops set com.cajitapaas RUN_IN_BACKGROUND allow 2>/dev/null || true; ")
+                    append("cmd appops set com.cajitapaas RUN_ANY_IN_BACKGROUND allow 2>/dev/null || true; ")
+                    append("settings put global wifi_sleep_policy 2 2>/dev/null || true; ")
+                    append("iw dev wlan0 set power_save off 2>/dev/null || true; ")
                     append("iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080 2>/dev/null || ")
                     append("iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080; ")
                     append("iptables -t nat -C OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 8080 2>/dev/null || ")

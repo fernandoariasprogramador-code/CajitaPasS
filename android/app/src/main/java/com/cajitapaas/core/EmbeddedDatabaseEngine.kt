@@ -43,7 +43,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         const val DEFAULT_DB_PASS = "cajitapaas2026"
         const val DEFAULT_DB_NAME = "cajitapaas"
         private const val BUNDLE_ASSET_NAME = "mariadb_alpine_bundle.zip"
-        private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v1_ready"
+        private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v2_ready"
     }
 
     private val prefs by lazy {
@@ -138,6 +138,20 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         return isLocalPortOpen(INTERNAL_MARIADB_PORT, timeoutMs = 400)
     }
 
+    fun getLibSearchPath(): String {
+        ensureBundleExtracted()
+        ensureLibrarySymlinks()
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        return "${libSymlinkDir.absolutePath}:$nativeLibDir"
+    }
+
+    fun getNodeGlobalModulesPath(): String {
+        ensureBundleExtracted()
+        return File(mariadbRootDir, "node_global/lib/node_modules").let {
+            if (it.exists()) it.absolutePath else File(mariadbRootDir, "node_global/node_modules").absolutePath
+        }
+    }
+
     /**
      * Elimina cualquier resto antiguo de bases SQLite para evitar conflictos de almacenamiento.
      */
@@ -152,8 +166,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
     }
 
     /**
-     * Descomprime el datadir pre-inicializado y los archivos de sistema (`errmsg.sys`, `charsets`)
-     * de `mariadb:alpine` desde los assets de la APK durante el primer arranque.
+     * Descomprime el datadir pre-inicializado y los archivos de sistema (`errmsg.sys`, `charsets`, `node_global`)
+     * de `mariadb:alpine` desde los assets de la APK durante el primer arranque, preservando `data/` si ya existía.
      */
     @Synchronized
     private fun ensureBundleExtracted() {
@@ -168,11 +182,12 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             return
         }
 
-        Log.i(TAG, "Extrayendo entorno base MariaDB Alpine ARM64 desde assets/$BUNDLE_ASSET_NAME...")
+        val preserveExistingData = mysqlSystemDir.exists()
+        Log.i(TAG, "Extrayendo entorno base MariaDB Alpine + Node.js ARM64 (preserveData=$preserveExistingData)...")
         runCatching { mariadbProcess?.destroyForcibly() }
         mariadbProcess = null
 
-        if (dataDir.exists()) dataDir.deleteRecursively()
+        if (!preserveExistingData && dataDir.exists()) dataDir.deleteRecursively()
         if (shareDir.exists()) shareDir.deleteRecursively()
         if (tmpDir.exists()) tmpDir.deleteRecursively()
 
@@ -186,7 +201,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
                 while (true) {
                     val entry = zis.nextEntry ?: break
                     val cleanName = entry.name.replace('\\', '/').trimStart('/')
-                    if (cleanName.isEmpty()) {
+                    if (cleanName.isEmpty() || (preserveExistingData && cleanName.startsWith("data/"))) {
                         zis.closeEntry()
                         continue
                     }
@@ -214,8 +229,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
         ensureLibrarySymlinks()
         writeMyCnfConfiguration()
-        marker.writeText("alpine-mariadb-arm64-ready")
-        Log.i(TAG, "Entorno MariaDB Alpine extraído con éxito en ${mariadbRootDir.absolutePath}")
+        marker.writeText("alpine-mariadb-arm64-v2-ready")
+        Log.i(TAG, "Entorno MariaDB Alpine + Node.js extraído con éxito en ${mariadbRootDir.absolutePath}")
     }
 
     /**

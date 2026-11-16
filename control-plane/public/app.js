@@ -543,14 +543,10 @@ async function runProtectedUpdate({
     // Pequeña pausa mínima para que la animación de carga sea visible y clara
     const [res] = await Promise.all([
       fetchPromiseFn().catch(async () => {
-        // Fallback automático si el socket multipart se cerró anticipadamente tras enviar el .ZIP
-        return fetch('./api/v1/deploy/git', {
-          method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ appName, appRole, routePath, fileName })
-        });
+        await new Promise((r) => setTimeout(r, 500));
+        return fetchPromiseFn();
       }),
-      new Promise((resolve) => setTimeout(resolve, 1400))
+      new Promise((resolve) => setTimeout(resolve, 900))
     ]);
 
     // Si estamos en el preview-server en memoria que no tenía /api/deploy/zip (404),

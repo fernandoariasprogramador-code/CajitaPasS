@@ -1,12 +1,14 @@
 #!/bin/sh
 # ==============================================================================
-# Script de empaquetado de MariaDB Alpine ARM64 oficial para CajitaPaaS (Android)
-# 1. Descarga los binarios y librerías nativas ARM64 (aarch64) desde Alpine 3.20.
+# Script de empaquetado de MariaDB Alpine ARM64 + Node.js ARM64 para CajitaPaaS
+# 1. Descarga binarios y librerías nativas ARM64 (aarch64) desde Alpine 3.20
+#    (mariadbd, mariadb client y nodejs para ejecutar APIs backend).
 # 2. Inicializa el datadir oficial de MariaDB 10.11 (InnoDB + catálogos + DBA).
+# 3. Pre-instala módulos comunes de Node.js (express, cors, mysql2, dotenv, etc.).
 # ==============================================================================
 set -ex
 
-apk add --no-cache mariadb mariadb-client mariadb-common alpine-keys zip
+apk add --no-cache mariadb mariadb-client mariadb-common alpine-keys zip npm
 
 JNI_DIR="/workspace/android/app/src/main/jniLibs/arm64-v8a"
 ASSETS_DIR="/workspace/android/app/src/main/assets"
@@ -14,20 +16,21 @@ STAGE_DIR="/tmp/mariadb_stage"
 ARM64_ROOT="/tmp/arm64_root"
 
 rm -rf "$STAGE_DIR" "$ARM64_ROOT"
-mkdir -p "$STAGE_DIR/data" "$STAGE_DIR/share" "$STAGE_DIR/tmp"
+mkdir -p "$STAGE_DIR/data" "$STAGE_DIR/share" "$STAGE_DIR/tmp" "$STAGE_DIR/node_global"
 mkdir -p "$JNI_DIR" "$ASSETS_DIR"
 
 # 1. Instalar paquetes oficiales ARM64 (aarch64) de Alpine 3.20 en un root limpio
 mkdir -p "$ARM64_ROOT/etc/apk"
 cp /etc/apk/repositories "$ARM64_ROOT/etc/apk/"
 cp -r /etc/apk/keys "$ARM64_ROOT/etc/apk/"
-apk --arch aarch64 --root "$ARM64_ROOT" --initdb --no-scripts --allow-untrusted add musl mariadb mariadb-client
+apk --arch aarch64 --root "$ARM64_ROOT" --initdb --no-scripts --allow-untrusted add musl mariadb mariadb-client nodejs
 
-# 2. Copiar linker musl y ejecutables ARM64 de MariaDB con nombres válidos para Android APK (lib*.so)
+# 2. Copiar linker musl y ejecutables ARM64 (MariaDB + Node.js) con nombres válidos para Android APK (lib*.so)
 cp -L "$ARM64_ROOT/lib/ld-musl-aarch64.so.1" "$JNI_DIR/libalpine_musl.so"
 cp -L "$ARM64_ROOT/usr/bin/mariadbd" "$JNI_DIR/libmariadbd.so"
 cp -L "$ARM64_ROOT/usr/bin/mariadb" "$JNI_DIR/libmariadb_cli.so"
-chmod 755 "$JNI_DIR/libalpine_musl.so" "$JNI_DIR/libmariadbd.so" "$JNI_DIR/libmariadb_cli.so"
+cp -L "$ARM64_ROOT/usr/bin/node" "$JNI_DIR/libnode.so"
+chmod 755 "$JNI_DIR/libalpine_musl.so" "$JNI_DIR/libmariadbd.so" "$JNI_DIR/libmariadb_cli.so" "$JNI_DIR/libnode.so"
 
 # Crear mapa de enlaces simbólicos (SONAME original -> archivo lib*.so en nativeLibraryDir)
 rm -f "$STAGE_DIR/libs_map.txt"
@@ -58,14 +61,18 @@ done
 sort -u "$STAGE_DIR/libs_map.txt" -o "$STAGE_DIR/libs_map.txt"
 cp -f "$STAGE_DIR/libs_map.txt" "$ASSETS_DIR/mariadb_libs_map.txt"
 
-# 4. Copiar archivos de mensajes (errmsg.sys) y charsets de MariaDB
+# 4. Pre-instalar paquetes esenciales de Node.js para que APIs subidas sin node_modules funcionen directo
+npm install --prefix "$STAGE_DIR/node_global" --no-audit --no-fund --silent \
+  express cors mysql2 mysql dotenv body-parser jsonwebtoken bcryptjs uuid
+
+# 5. Copiar archivos de mensajes (errmsg.sys) y charsets de MariaDB
 cp -r /usr/share/mariadb/charsets "$STAGE_DIR/share/"
 cp -r /usr/share/mariadb/english "$STAGE_DIR/share/"
 if [ -d /usr/share/mariadb/spanish ]; then
   cp -r /usr/share/mariadb/spanish "$STAGE_DIR/share/"
 fi
 
-# 5. Inicializar datadir oficial de MariaDB Alpine
+# 6. Inicializar datadir oficial de MariaDB Alpine
 mariadb-install-db \
   --no-defaults \
   --user=root \
@@ -77,7 +84,7 @@ mariadb-install-db \
   --innodb-log-file-size=8M \
   --innodb-use-native-aio=0
 
-# 6. Iniciar mariadbd para configurar usuarios DBA (cajita_admin y root) y base cajitapaas
+# 7. Iniciar mariadbd para configurar usuarios DBA (cajita_admin y root) y base cajitapaas
 /usr/bin/mariadbd \
   --no-defaults \
   --user=root \
@@ -170,9 +177,9 @@ SQL_EOF
 wait "$MDB_PID" || true
 rm -rf "$STAGE_DIR/tmp"/* "$STAGE_DIR/data/"*.pid "$STAGE_DIR/data/"*.err
 
-# 7. Empaquetar datadir, share y libs_map.txt en mariadb_alpine_bundle.zip
+# 8. Empaquetar datadir, share, node_global y libs_map.txt en mariadb_alpine_bundle.zip
 cd "$STAGE_DIR"
-zip -r -9 "$ASSETS_DIR/mariadb_alpine_bundle.zip" data share libs_map.txt
+zip -r -9 "$ASSETS_DIR/mariadb_alpine_bundle.zip" data share node_global libs_map.txt
 
 ls -lh "$JNI_DIR/"
 ls -lh "$ASSETS_DIR/mariadb_alpine_bundle.zip"

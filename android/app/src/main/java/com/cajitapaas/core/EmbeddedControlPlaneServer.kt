@@ -1,6 +1,7 @@
 package com.cajitapaas.core
 
 import android.content.Context
+import android.system.Os
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -11,8 +12,10 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
@@ -21,6 +24,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 import kotlin.concurrent.thread
 
@@ -28,8 +32,9 @@ import kotlin.concurrent.thread
  * Servidor HTTP del Control Plane (puerto 4000) + Gateway de Aplicaciones (puerto 8080)
  * + Servidores dedicados por puerto de cada App desplegada (3001, 3003, etc.).
  *
- * Al subir un archivo .ZIP, extrae su contenido real en `filesDir/deployed_apps/<appName>`
- * y levanta inmediatamente el servidor HTTP en `0.0.0.0:<activePort>` y en el Gateway `:8080`.
+ * Al subir un archivo .ZIP, extrae su contenido real en `filesDir/deployed_apps/<appName>`,
+ * detecta si es un Backend Node.js (ejecutándolo con `libnode.so` de Alpine ARM64) o un Frontend Web,
+ * y expone el servicio en `0.0.0.0:<activePort>` y en el Gateway `:8080`.
  */
 class EmbeddedControlPlaneServer(
     private val context: Context,
@@ -48,6 +53,8 @@ class EmbeddedControlPlaneServer(
     private var serverSocket: ServerSocket? = null
     private var gatewaySocket: ServerSocket? = null
     private val appServerSockets = ConcurrentHashMap<String, ServerSocket>()
+    private val appProcesses = ConcurrentHashMap<String, Process>()
+    private val appNodeLogs = ConcurrentHashMap<String, String>()
     private val executor = Executors.newCachedThreadPool()
 
     private val prefs by lazy {
@@ -71,40 +78,55 @@ class EmbeddedControlPlaneServer(
     @Volatile
     var tunnelLastError: String? = null
 
+    @Synchronized
     fun start() {
-        if (isRunning) return
+        val controlAlive = serverSocket != null && !serverSocket!!.isClosed
+        val gatewayAlive = gatewaySocket != null && !gatewaySocket!!.isClosed
+        if (isRunning && controlAlive && gatewayAlive) return
         isRunning = true
 
         // 1. Iniciar servidor principal del Panel de Configuración (0.0.0.0:4000)
-        thread(name = "CPS-Embedded-HTTP-$port") {
-            try {
-                serverSocket = ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))
-                Log.i(TAG, "Control Plane escuchando en red interna 0.0.0.0:$port (LAN IP: ${getDeviceLanIp()}:$port)")
-                while (isRunning) {
-                    val client = serverSocket?.accept() ?: break
-                    executor.execute { handleClient(client) }
+        if (!controlAlive) {
+            thread(name = "CPS-Embedded-HTTP-$port") {
+                try {
+                    val srv = ServerSocket()
+                    srv.reuseAddress = true
+                    srv.bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 50)
+                    serverSocket = srv
+                    Log.i(TAG, "Control Plane escuchando en red interna 0.0.0.0:$port (LAN IP: ${getDeviceLanIp()}:$port)")
+                    while (isRunning && !srv.isClosed) {
+                        val client = srv.accept() ?: break
+                        executor.execute { handleClient(client) }
+                    }
+                } catch (e: Exception) {
+                    if (isRunning) Log.e(TAG, "Error en servidor HTTP embebido (:$port)", e)
                 }
-            } catch (e: Exception) {
-                if (isRunning) Log.e(TAG, "Error en servidor HTTP embebido (:$port)", e)
             }
         }
 
         // 2. Iniciar Gateway reverso en 0.0.0.0:8080 (para el túnel Cloudflare y acceso general)
-        thread(name = "CPS-Gateway-$GATEWAY_PORT") {
-            try {
-                gatewaySocket = ServerSocket(GATEWAY_PORT, 50, InetAddress.getByName("0.0.0.0"))
-                Log.i(TAG, "Gateway de Apps escuchando en 0.0.0.0:$GATEWAY_PORT")
-                while (isRunning) {
-                    val client = gatewaySocket?.accept() ?: break
-                    executor.execute { handleGatewayClient(client) }
+        if (!gatewayAlive) {
+            thread(name = "CPS-Gateway-$GATEWAY_PORT") {
+                try {
+                    val gw = ServerSocket()
+                    gw.reuseAddress = true
+                    gw.bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), GATEWAY_PORT), 50)
+                    gatewaySocket = gw
+                    Log.i(TAG, "Gateway de Apps escuchando en 0.0.0.0:$GATEWAY_PORT")
+                    while (isRunning && !gw.isClosed) {
+                        val client = gw.accept() ?: break
+                        executor.execute { handleGatewayClient(client) }
+                    }
+                } catch (e: Exception) {
+                    if (isRunning) Log.e(TAG, "Error en Gateway HTTP (:$GATEWAY_PORT)", e)
                 }
-            } catch (e: Exception) {
-                if (isRunning) Log.e(TAG, "Error en Gateway HTTP (:$GATEWAY_PORT)", e)
             }
         }
 
         // 3. Levantar los servidores dedicados (ej. :3001, :3003) de las apps que ya estaban guardadas
-        restoreRunningAppServers()
+        if (appServerSockets.isEmpty()) {
+            restoreRunningAppServers()
+        }
     }
 
     fun stop() {
@@ -116,6 +138,10 @@ class EmbeddedControlPlaneServer(
             runCatching { sock.close() }
         }
         appServerSockets.clear()
+        for ((_, proc) in appProcesses) {
+            runCatching { proc.destroyForcibly() }
+        }
+        appProcesses.clear()
     }
 
     private fun restoreRunningAppServers() {
@@ -130,19 +156,24 @@ class EmbeddedControlPlaneServer(
     }
 
     /**
-     * Abre un ServerSocket real en `0.0.0.0:<appPort>` (ej. 3001) para servir los archivos
-     * descomprimidos del `.ZIP` subido por el usuario en `http://<IP_DEL_CELU>:3001`.
+     * Abre un ServerSocket real en `0.0.0.0:<appPort>` (ej. 3001) y, si el proyecto contiene
+     * un Backend Node.js (`server.js` / `index.js` / `package.json`), levanta su proceso real con `libnode.so`.
      */
     private fun startDedicatedAppServer(appName: String, appPort: Int) {
         stopDedicatedAppServer(appName)
+        executor.execute {
+            runCatching { startAppNodeProcessIfPresent(appName, appPort) }
+        }
         thread(name = "CPS-App-$appName-$appPort") {
             try {
-                val sock = ServerSocket(appPort, 50, InetAddress.getByName("0.0.0.0"))
+                val sock = ServerSocket()
+                sock.reuseAddress = true
+                sock.bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), appPort), 50)
                 appServerSockets[appName] = sock
                 Log.i(TAG, "App '$appName' sirviendo en http://${getDeviceLanIp()}:$appPort")
                 while (isRunning && !sock.isClosed) {
                     val client = sock.accept() ?: break
-                    executor.execute { handleDedicatedAppClient(appName, client) }
+                    executor.execute { handleDedicatedAppClient(appName, appPort, client) }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Servidor de app '$appName' en puerto $appPort finalizado: ${e.message}")
@@ -154,36 +185,371 @@ class EmbeddedControlPlaneServer(
         appServerSockets.remove(appName)?.let { sock ->
             runCatching { sock.close() }
         }
+        appProcesses.remove(appName)?.let { proc ->
+            runCatching { proc.destroyForcibly() }
+        }
     }
 
-    private fun handleDedicatedAppClient(appName: String, socket: Socket) {
+    /**
+     * Detecta si el directorio desplegado de `appName` contiene una aplicación Node.js
+     * y la ejecuta en segundo plano redirigiendo su puerto interno a `appPort + 10000` (ej. 13001).
+     */
+    private fun startAppNodeProcessIfPresent(appName: String, appPort: Int) {
+        val baseDir = File(deployedAppsBaseDir, appName)
+        if (!baseDir.exists()) return
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val entryScript = findNodeEntryScript(appRoot) ?: return
+
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val muslLinker = File(nativeLibDir, "libalpine_musl.so")
+        val nodeBin = File(nativeLibDir, "libnode.so")
+        if (!muslLinker.exists() || !nodeBin.exists()) {
+            Log.w(TAG, "Binario libnode.so no disponible para iniciar '$appName'")
+            return
+        }
+
+        runCatching { Os.chmod(muslLinker.absolutePath, 493) }
+        runCatching { Os.chmod(nodeBin.absolutePath, 493) }
+
+        val internalNodePort = appPort + 10000
+        val preloadFile = File(context.filesDir, "cps_node_preload.js")
+        preloadFile.writeText(
+            """
+            const net = require('net');
+            const origListen = net.Server.prototype.listen;
+            const targetPort = parseInt(process.env.CPS_INTERNAL_PORT || '$internalNodePort', 10);
+            net.Server.prototype.listen = function(...args) {
+              if (args.length > 0 && typeof args[0] === 'number' && args[0] !== targetPort) {
+                args[0] = targetPort;
+              } else if (args.length > 0 && typeof args[0] === 'string' && /^\d+$/.test(args[0])) {
+                args[0] = targetPort;
+              } else if (args.length > 0 && typeof args[0] === 'object' && args[0] !== null && args[0].port) {
+                args[0] = Object.assign({}, args[0], { port: targetPort, host: '127.0.0.1' });
+              }
+              return origListen.apply(this, args);
+            };
+            """.trimIndent()
+        )
+
+        val libSearchPath = dbEngine.getLibSearchPath()
+        val globalNodeModules = dbEngine.getNodeGlobalModulesPath()
+        val localNodeModules = File(appRoot, "node_modules").absolutePath
+
+        val args = listOf(
+            muslLinker.absolutePath,
+            "--library-path",
+            libSearchPath,
+            nodeBin.absolutePath,
+            "--require",
+            preloadFile.absolutePath,
+            entryScript.absolutePath
+        )
+
+        val pb = ProcessBuilder(args)
+            .directory(appRoot)
+            .redirectErrorStream(true)
+
+        val env = pb.environment()
+        // Cargar variables del archivo .env del proyecto si existe
+        val dotEnvFile = File(appRoot, ".env")
+        if (dotEnvFile.exists() && dotEnvFile.isFile) {
+            runCatching {
+                dotEnvFile.readLines().forEach { rawLine ->
+                    val trimmed = rawLine.trim()
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                        val k = trimmed.substringBefore("=").trim()
+                        val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                        if (k.isNotEmpty()) env[k] = v
+                    }
+                }
+            }
+        }
+
+        env["PORT"] = internalNodePort.toString()
+        env["CPS_INTERNAL_PORT"] = internalNodePort.toString()
+        env["HOST"] = "127.0.0.1"
+        env["NODE_ENV"] = "production"
+        env["NODE_PATH"] = "$localNodeModules:$globalNodeModules"
+        env["LD_LIBRARY_PATH"] = libSearchPath
+        env["HOME"] = appRoot.absolutePath
+        env["TMPDIR"] = context.cacheDir.absolutePath
+        // Variables estándar de conexión a la base de datos MariaDB local si no estaban definidas
+        if (env["DB_HOST"].isNullOrBlank() || env["DB_HOST"] == "localhost") env["DB_HOST"] = "127.0.0.1"
+        if (env["DB_PORT"].isNullOrBlank()) env["DB_PORT"] = "3306"
+        if (env["DB_USER"].isNullOrBlank()) env["DB_USER"] = dbEngine.getDbUser()
+        if (env["DB_PASS"].isNullOrBlank()) env["DB_PASS"] = dbEngine.getDbPassword()
+        if (env["DB_PASSWORD"].isNullOrBlank()) env["DB_PASSWORD"] = dbEngine.getDbPassword()
+        if (env["DB_NAME"].isNullOrBlank()) env["DB_NAME"] = EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+
+        appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+        val proc = pb.start()
+        appProcesses[appName] = proc
+        Log.i(TAG, "Proceso Node.js iniciado para '$appName' (${entryScript.name}) en puerto interno $internalNodePort")
+
+        thread(name = "CPS-NodeLog-$appName", isDaemon = true) {
+            runCatching {
+                proc.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        appNodeLogs[appName] = line
+                        Log.i(TAG, "[Node:$appName] $line")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun findNodeEntryScript(appRoot: File): File? {
+        val pkgFile = File(appRoot, "package.json")
+        if (pkgFile.exists() && pkgFile.isFile) {
+            runCatching {
+                val pkg = JSONObject(pkgFile.readText(Charsets.UTF_8))
+                val startCmd = pkg.optJSONObject("scripts")?.optString("start", "") ?: ""
+                if (startCmd.contains(".js")) {
+                    val scriptToken = startCmd.split(" ").firstOrNull { it.endsWith(".js") || it.endsWith(".mjs") || it.endsWith(".cjs") }
+                    if (!scriptToken.isNullOrBlank()) {
+                        val f = File(appRoot, scriptToken.removePrefix("./"))
+                        if (f.exists() && f.isFile) return f
+                    }
+                }
+                val mainField = pkg.optString("main", "").trim()
+                if (mainField.isNotEmpty()) {
+                    val f = File(appRoot, mainField.removePrefix("./"))
+                    if (f.exists() && f.isFile) return f
+                }
+            }
+        }
+
+        val candidates = listOf(
+            "server.js", "index.js", "app.js", "main.js",
+            "src/server.js", "src/index.js", "src/app.js", "src/main.js",
+            "dist/server.js", "dist/index.js", "dist/main.js",
+            "build/server.js", "build/index.js"
+        )
+        for (rel in candidates) {
+            val f = File(appRoot, rel)
+            if (f.exists() && f.isFile && !File(appRoot, "index.html").exists()) {
+                return f
+            }
+        }
+        return null
+    }
+
+    private fun resolveEffectiveAppRoot(baseDir: File): File {
+        if (!baseDir.exists()) return baseDir
+        if (File(baseDir, "package.json").exists() || File(baseDir, "server.js").exists() || File(baseDir, "index.js").exists() || File(baseDir, "index.html").exists()) {
+            return baseDir
+        }
+        val children = baseDir.listFiles()?.filter { !it.name.startsWith(".") && it.name != "__MACOSX" } ?: emptyList()
+        if (children.size == 1 && children[0].isDirectory) {
+            return resolveEffectiveAppRoot(children[0])
+        }
+        return baseDir
+    }
+
+    private fun isLocalPortOpen(port: Int, timeoutMs: Int = 250): Boolean {
+        return try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun handleDedicatedAppClient(appName: String, appPort: Int, socket: Socket) {
         socket.use { client ->
-            client.soTimeout = 15_000
-            val input = BufferedInputStream(client.getInputStream(), 8192)
+            client.soTimeout = 30_000
+            val input = BufferedInputStream(client.getInputStream(), 16 * 1024)
             val out = client.getOutputStream()
 
             val requestLine = readHeaderLine(input) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) return
-            val rawPath = parts[1].substringBefore("?")
+            val method = parts[0]
+            val fullUri = parts[1]
+            val rawPath = fullUri.substringBefore("?")
 
+            val headerLines = mutableListOf<String>()
+            var contentLength = 0L
             while (true) {
                 val line = readHeaderLine(input) ?: break
                 if (line.isEmpty()) break
+                headerLines.add(line)
+                val idx = line.indexOf(':')
+                if (idx > 0 && line.substring(0, idx).trim().equals("content-length", ignoreCase = true)) {
+                    contentLength = line.substring(idx + 1).trim().toLongOrNull() ?: 0L
+                }
             }
 
-            serveDeployedAppFile(appName, rawPath, out)
+            if (method.equals("OPTIONS", ignoreCase = true)) {
+                sendCorsPreflightResponse(out)
+                runCatching { out.flush() }
+                return
+            }
+
+            val bodyBytes = if (contentLength > 0L) {
+                readFixedBytes(input, contentLength.coerceAtMost(10L * 1024L * 1024L).toInt())
+            } else ByteArray(0)
+
+            val internalNodePort = appPort + 10000
+            if (isLocalPortOpen(internalNodePort, 200)) {
+                val proxied = proxyToLocalNodeServer(internalNodePort, method, fullUri, rawPath, headerLines, bodyBytes, appName, appPort, out)
+                if (proxied) {
+                    runCatching { out.flush() }
+                    runCatching { client.shutdownOutput() }
+                    return
+                }
+            }
+
+            serveDeployedAppFile(appName, appPort, rawPath, out)
             runCatching { out.flush() }
             runCatching { client.shutdownOutput() }
         }
     }
 
+    private fun sendCorsPreflightResponse(out: OutputStream) {
+        val resp = buildString {
+            append("HTTP/1.1 204 No Content\r\n")
+            append("Access-Control-Allow-Origin: *\r\n")
+            append("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n")
+            append("Access-Control-Allow-Headers: *\r\n")
+            append("Access-Control-Max-Age: 86400\r\n")
+            append("Content-Length: 0\r\n")
+            append("Connection: close\r\n\r\n")
+        }
+        out.write(resp.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun readFixedBytes(input: InputStream, len: Int): ByteArray {
+        val buf = ByteArray(len)
+        var total = 0
+        while (total < len) {
+            val r = input.read(buf, total, len - total)
+            if (r <= 0) break
+            total += r
+        }
+        return if (total == len) buf else buf.copyOf(total)
+    }
+
+    private fun proxyToLocalNodeServer(
+        internalNodePort: Int,
+        method: String,
+        fullUri: String,
+        rawPath: String,
+        headerLines: List<String>,
+        bodyBytes: ByteArray,
+        appName: String,
+        appPort: Int,
+        clientOut: OutputStream
+    ): Boolean {
+        return try {
+            Socket().use { backend ->
+                backend.soTimeout = 30_000
+                backend.connect(InetSocketAddress("127.0.0.1", internalNodePort), 1000)
+                val bOut = backend.getOutputStream()
+                val bIn = BufferedInputStream(backend.getInputStream(), 16 * 1024)
+
+                val reqHeader = buildString {
+                    append("$method $fullUri HTTP/1.1\r\n")
+                    for (h in headerLines) {
+                        val lower = h.lowercase()
+                        if (!lower.startsWith("connection:")) {
+                            append(h).append("\r\n")
+                        }
+                    }
+                    append("Connection: close\r\n\r\n")
+                }
+                bOut.write(reqHeader.toByteArray(Charsets.ISO_8859_1))
+                if (bodyBytes.isNotEmpty()) {
+                    bOut.write(bodyBytes)
+                }
+                bOut.flush()
+
+                val statusLine = readHeaderLine(bIn) ?: return false
+                // Si el usuario consulta /api/status o /status y el backend Node devuelve 404 porque no definió esa ruta de prueba,
+                // respondemos con el JSON de estado saludable de la API
+                if (statusLine.contains(" 404 ") && (rawPath == "/api/status" || rawPath == "/status" || rawPath == "/health" || rawPath == "/api/health")) {
+                    sendAppStatusJson(appName, appPort, clientOut)
+                    return true
+                }
+
+                val respHeaders = mutableListOf<String>()
+                var hasCors = false
+                while (true) {
+                    val line = readHeaderLine(bIn) ?: break
+                    if (line.isEmpty()) break
+                    if (line.lowercase().startsWith("access-control-allow-origin:")) {
+                        hasCors = true
+                    }
+                    respHeaders.add(line)
+                }
+
+                val outHeader = buildString {
+                    append(statusLine).append("\r\n")
+                    for (h in respHeaders) {
+                        append(h).append("\r\n")
+                    }
+                    if (!hasCors) {
+                        append("Access-Control-Allow-Origin: *\r\n")
+                        append("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n")
+                        append("Access-Control-Allow-Headers: *\r\n")
+                    }
+                    append("\r\n")
+                }
+                clientOut.write(outHeader.toByteArray(Charsets.ISO_8859_1))
+                val buf = ByteArray(16 * 1024)
+                while (true) {
+                    val r = bIn.read(buf)
+                    if (r == -1) break
+                    clientOut.write(buf, 0, r)
+                }
+                clientOut.flush()
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isControlPlaneApiPath(path: String): Boolean {
+        return path == "/api/auth/setup-status" ||
+            path == "/api/auth/setup" ||
+            path == "/api/auth/login" ||
+            path == "/api/v1/auth/token" ||
+            path == "/api/deploy/zip" ||
+            path == "/api/v1/deploy/zip" ||
+            path == "/api/v1/deploy/git" ||
+            path == "/api/v1/projects" ||
+            path.startsWith("/api/v1/projects/") ||
+            path.startsWith("/api/v1/db/") ||
+            path.startsWith("/api/v1/tunnel/") ||
+            path.startsWith("/api/v1/network/")
+    }
+
+    private fun sendAppStatusJson(appName: String, appPort: Int, out: OutputStream) {
+        val internalNodePort = appPort + 10000
+        val nodeActive = isLocalPortOpen(internalNodePort, 150)
+        val json = JSONObject()
+            .put("status", "online")
+            .put("healthy", true)
+            .put("app", appName)
+            .put("port", appPort)
+            .put("mariadbConnected", dbEngine.isDaemonHealthy())
+            .put("dbEngine", "MariaDB Alpine ARM64 (InnoDB)")
+            .put("dbHost", "127.0.0.1")
+            .put("dbPort", EmbeddedDatabaseEngine.STANDARD_PORT)
+            .put("nodeRuntimeActive", nodeActive)
+            .put("lastLog", appNodeLogs[appName] ?: "Servicio listo")
+            .put("message", "API '$appName' activa y operativa en CajitaPaaS (Puerto :$appPort)")
+        sendJson(out, 200, json.toString())
+    }
+
     // Atiende peticiones en el puerto 8080 (Gateway local y destino del Túnel Cloudflare).
-    // Enruta /_control/ al panel administrativo y el resto de rutas (/, /api/, etc.)
-    // a las aplicaciones subidas por el usuario.
+    // Enruta /_control/ y endpoints de administración al Control Plane y el resto a las apps subidas.
     private fun handleGatewayClient(socket: Socket) {
         socket.use { client ->
-            client.soTimeout = 60_000
+            client.soTimeout = 180_000
             val remoteIp = client.inetAddress?.hostAddress?.removePrefix("::ffff:") ?: ""
             val input = BufferedInputStream(client.getInputStream(), 32 * 1024)
             val out = client.getOutputStream()
@@ -198,10 +564,12 @@ class EmbeddedControlPlaneServer(
             val queryParams = parseQueryParams(rawQuery)
 
             val headers = mutableMapOf<String, String>()
+            val headerLines = mutableListOf<String>()
             var contentLength = 0L
             while (true) {
                 val line = readHeaderLine(input) ?: break
                 if (line.isEmpty()) break
+                headerLines.add(line)
                 val idx = line.indexOf(':')
                 if (idx > 0) {
                     val key = line.substring(0, idx).trim().lowercase()
@@ -213,12 +581,38 @@ class EmbeddedControlPlaneServer(
                 }
             }
 
-            // Si acceden a /_control/* a través del túnel o gateway :8080, servir el Panel Administrativo
-            if (rawPath == "/_control" || rawPath.startsWith("/_control/")) {
-                val stripped = rawPath.removePrefix("/_control").ifEmpty { "/" }
+            if (method.equals("OPTIONS", ignoreCase = true)) {
+                sendCorsPreflightResponse(out)
+                runCatching { out.flush() }
+                return
+            }
+
+            if (headers["expect"]?.contains("100-continue", ignoreCase = true) == true) {
+                out.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.UTF_8))
+                out.flush()
+            }
+
+            // Redirigir /_control sin barra final a /_control/ para que las rutas relativas ./api/* funcionen siempre
+            if (rawPath == "/_control") {
+                val redir = "HTTP/1.1 302 Found\r\nLocation: /_control/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                out.write(redir.toByteArray(Charsets.UTF_8))
+                out.flush()
+                return
+            }
+
+            // Si acceden a /_control/* o a un endpoint propio del Control Plane (como /api/deploy/zip)
+            if (rawPath.startsWith("/_control/") || isControlPlaneApiPath(rawPath)) {
+                val stripped = if (rawPath.startsWith("/_control/")) {
+                    rawPath.removePrefix("/_control").ifEmpty { "/" }
+                } else rawPath
+
                 if (stripped.startsWith("/api/")) {
-                    val body = readRequestBodyAsString(input, contentLength)
-                    handleApiRequest(method, stripped, queryParams, body, null, remoteIp, out)
+                    val (body, uploadedFile) = readBodyAndMultipartIfPresent(input, contentLength, headers)
+                    try {
+                        handleApiRequest(method, stripped, queryParams, body, uploadedFile, remoteIp, out)
+                    } finally {
+                        uploadedFile?.delete()
+                    }
                 } else {
                     serveStaticAsset(stripped, out)
                 }
@@ -233,14 +627,30 @@ class EmbeddedControlPlaneServer(
 
             if (matchedApp != null) {
                 val (appName, routePrefix) = matchedApp
+                val appInfo = projects.optJSONObject(appName)
+                val appPort = appInfo?.optInt("activePort", 3001) ?: 3001
+                val internalNodePort = appPort + 10000
+
+                val bodyBytes = if (contentLength > 0L) {
+                    readFixedBytes(input, contentLength.coerceAtMost(10L * 1024L * 1024L).toInt())
+                } else ByteArray(0)
+
+                if (isLocalPortOpen(internalNodePort, 200)) {
+                    val proxied = proxyToLocalNodeServer(internalNodePort, method, fullUri, rawPath, headerLines, bodyBytes, appName, appPort, out)
+                    if (proxied) {
+                        runCatching { out.flush() }
+                        runCatching { client.shutdownOutput() }
+                        return
+                    }
+                }
+
                 val subPath = if (routePrefix != "/" && rawPath.startsWith(routePrefix)) {
                     rawPath.removePrefix(routePrefix).let { if (it.startsWith("/")) it else "/$it" }
                 } else {
                     rawPath
                 }
-                serveDeployedAppFile(appName, subPath, out)
+                serveDeployedAppFile(appName, appPort, subPath, out)
             } else {
-                // Si todavía no hay ninguna app subida en `/`, mostrar una página amigable indicando que el servidor está activo
                 serveStaticAsset(rawPath, out)
             }
 
@@ -271,24 +681,17 @@ class EmbeddedControlPlaneServer(
     }
 
     /**
-     * Sirve los archivos reales extraídos del `.ZIP` de la aplicación `appName`.
+     * Sirve los archivos reales extraídos del `.ZIP` de la aplicación `appName`
+     * o responde a las rutas de estado (`/api/status`, `/status`, `/health`, `/api/health`).
      */
-    private fun serveDeployedAppFile(appName: String, rawPath: String, out: OutputStream) {
-        if (rawPath == "/health" || rawPath == "/api/health") {
-            return sendJson(out, 200, JSONObject().put("status", "healthy").put("app", appName).toString())
+    private fun serveDeployedAppFile(appName: String, appPort: Int, rawPath: String, out: OutputStream) {
+        if (rawPath == "/health" || rawPath == "/api/health" || rawPath == "/status" || rawPath == "/api/status" || rawPath == "/api/v1/status") {
+            return sendAppStatusJson(appName, appPort, out)
         }
 
         val appRootDir = resolveEffectiveWebRoot(File(deployedAppsBaseDir, appName))
         if (!appRootDir.exists()) {
-            return sendJson(
-                out,
-                200,
-                JSONObject()
-                    .put("app", appName)
-                    .put("status", "online")
-                    .put("message", "Servicio '$appName' activo en CajitaPaaS.")
-                    .toString()
-            )
+            return sendAppStatusJson(appName, appPort, out)
         }
 
         val cleanRel = URLDecoder.decode(rawPath, "UTF-8").trimStart('/').ifEmpty { "index.html" }
@@ -344,8 +747,14 @@ class EmbeddedControlPlaneServer(
             out.write(header.toByteArray(Charsets.UTF_8))
             out.write(bytes)
         } else {
+            // Si es un servicio Backend sin archivo estático coincidente, devolver JSON estructurado
+            val projects = loadSavedProjects()
+            val role = projects.optJSONObject(appName)?.optString("appRole", "frontend") ?: "frontend"
+            if (role == "backend") {
+                return sendAppStatusJson(appName, appPort, out)
+            }
             val notFoundMsg = "Archivo no encontrado en '$appName': /$cleanRel".toByteArray(Charsets.UTF_8)
-            out.write("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${notFoundMsg.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            out.write("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${notFoundMsg.size}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n".toByteArray())
             out.write(notFoundMsg)
         }
     }
@@ -436,7 +845,7 @@ class EmbeddedControlPlaneServer(
 
     private fun handleClient(socket: Socket) {
         socket.use { client ->
-            client.soTimeout = 60_000
+            client.soTimeout = 180_000
             val remoteIp = client.inetAddress?.hostAddress?.removePrefix("::ffff:") ?: ""
             val input = BufferedInputStream(client.getInputStream(), 32 * 1024)
             val out = client.getOutputStream()
@@ -466,59 +875,28 @@ class EmbeddedControlPlaneServer(
                 }
             }
 
+            if (method.equals("OPTIONS", ignoreCase = true)) {
+                sendCorsPreflightResponse(out)
+                runCatching { out.flush() }
+                return
+            }
+
             if (headers["expect"]?.contains("100-continue", ignoreCase = true) == true) {
                 out.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.UTF_8))
                 out.flush()
             }
 
-            val contentType = headers["content-type"] ?: ""
-            val isChunked = headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
-
-            var uploadedMultipartFile: File? = null
-            val body = try {
-                if (contentLength > 0L && !contentType.startsWith("multipart/form-data")) {
-                    readRequestBodyAsString(input, contentLength)
-                } else if (contentLength > 0L && contentType.startsWith("multipart/form-data")) {
-                    // Guardar el flujo multipart completo en un archivo temporal para extraer el .ZIP real
-                    val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}_${System.nanoTime()}.bin")
-                    uploadedMultipartFile = tempFile
-                    val maxPreview = 64 * 1024
-                    val previewOut = ByteArrayOutputStream(minOf(contentLength.toInt().coerceAtLeast(0), maxPreview))
-                    val chunk = ByteArray(32 * 1024)
-                    var remaining = contentLength
-
-                    FileOutputStream(tempFile).use { fos ->
-                        while (remaining > 0L) {
-                            val toRead = minOf(chunk.size.toLong(), remaining).toInt()
-                            val r = input.read(chunk, 0, toRead)
-                            if (r <= 0) break
-                            fos.write(chunk, 0, r)
-                            if (previewOut.size() < maxPreview) {
-                                val copyLen = minOf(r, maxPreview - previewOut.size())
-                                previewOut.write(chunk, 0, copyLen)
-                            }
-                            remaining -= r
-                        }
-                        fos.flush()
-                    }
-                    String(previewOut.toByteArray(), Charsets.ISO_8859_1)
-                } else if (isChunked) {
-                    drainChunkedBody(input)
-                } else ""
-            } catch (e: Exception) {
-                Log.e(TAG, "Error leyendo cuerpo HTTP", e)
-                ""
-            }
+            val (body, uploadedMultipartFile) = readBodyAndMultipartIfPresent(input, contentLength, headers)
 
             try {
                 if (rawPath.startsWith("/api/")) {
                     handleApiRequest(method, rawPath, queryParams, body, uploadedMultipartFile, remoteIp, out)
                 } else if (rawPath.startsWith("/app/")) {
-                    // Ruta directa opcional: /app/<nombreApp>/...
                     val afterApp = rawPath.removePrefix("/app/")
                     val appName = afterApp.substringBefore("/")
                     val subPath = "/" + afterApp.substringAfter("/", "")
-                    serveDeployedAppFile(appName, subPath, out)
+                    val appPort = loadSavedProjects().optJSONObject(appName)?.optInt("activePort", 3001) ?: 3001
+                    serveDeployedAppFile(appName, appPort, subPath, out)
                 } else {
                     serveStaticAsset(rawPath, out)
                 }
@@ -536,6 +914,51 @@ class EmbeddedControlPlaneServer(
                 }
             }
         }
+    }
+
+    private fun readBodyAndMultipartIfPresent(
+        input: InputStream,
+        contentLength: Long,
+        headers: Map<String, String>
+    ): Pair<String, File?> {
+        val contentType = headers["content-type"]?.lowercase() ?: ""
+        val isChunked = headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
+        var uploadedMultipartFile: File? = null
+
+        val body = try {
+            if (contentLength > 0L && !contentType.startsWith("multipart/form-data")) {
+                readRequestBodyAsString(input, contentLength)
+            } else if (contentLength > 0L && contentType.startsWith("multipart/form-data")) {
+                val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}_${System.nanoTime()}.bin")
+                uploadedMultipartFile = tempFile
+                val maxPreview = 64 * 1024
+                val previewOut = ByteArrayOutputStream(minOf(contentLength.toInt().coerceAtLeast(0), maxPreview))
+                val chunk = ByteArray(32 * 1024)
+                var remaining = contentLength
+
+                FileOutputStream(tempFile).use { fos ->
+                    while (remaining > 0L) {
+                        val toRead = minOf(chunk.size.toLong(), remaining).toInt()
+                        val r = input.read(chunk, 0, toRead)
+                        if (r <= 0) break
+                        fos.write(chunk, 0, r)
+                        if (previewOut.size() < maxPreview) {
+                            val copyLen = minOf(r, maxPreview - previewOut.size())
+                            previewOut.write(chunk, 0, copyLen)
+                        }
+                        remaining -= r
+                    }
+                    fos.flush()
+                }
+                String(previewOut.toByteArray(), Charsets.ISO_8859_1)
+            } else if (isChunked) {
+                drainChunkedBody(input)
+            } else ""
+        } catch (e: Exception) {
+            Log.e(TAG, "Error leyendo cuerpo HTTP", e)
+            ""
+        }
+        return body to uploadedMultipartFile
     }
 
     private fun readRequestBodyAsString(input: InputStream, contentLength: Long): String {
@@ -559,7 +982,8 @@ class EmbeddedControlPlaneServer(
 
     /**
      * Extrae el contenido de un archivo `.ZIP` embebido dentro de un cuerpo `multipart/form-data`.
-     * Localiza la cabecera binaria `PK\x03\x04` (`0x50, 0x4B, 0x03, 0x04`) y descomprime todas las entradas.
+     * Aislando primero el rango exacto `[PK\x03\x04 .. EOCD PK\x05\x06]` en un archivo `.zip` limpio,
+     * utiliza `java.util.zip.ZipFile` (nativo C++) que soporta descriptores EXT de Windows y archivos grandes.
      */
     private fun extractZipFromMultipartFile(multipartFile: File, targetDir: File): Int {
         if (!multipartFile.exists() || multipartFile.length() < 4) return 0
@@ -570,55 +994,106 @@ class EmbeddedControlPlaneServer(
             return 0
         }
 
-        if (targetDir.exists()) {
-            targetDir.deleteRecursively()
-        }
-        targetDir.mkdirs()
+        val zipEndOffset = findZipEndOffset(multipartFile, zipStartOffset)
+        val cleanZipFile = File(context.cacheDir, "clean_pkg_${System.nanoTime()}.zip")
 
-        var extractedCount = 0
-        FileInputStream(multipartFile).use { fis ->
-            var skipped = 0L
-            while (skipped < zipStartOffset) {
-                val s = fis.skip(zipStartOffset - skipped)
-                if (s <= 0) break
-                skipped += s
-            }
-
-            ZipInputStream(BufferedInputStream(fis)).use { zis ->
-                val buffer = ByteArray(16 * 1024)
-                while (true) {
-                    val entry = runCatching { zis.nextEntry }.getOrNull() ?: break
-                    val entryName = entry.name.replace('\\', '/').trimStart('/')
-                    if (entryName.isEmpty() || entryName.startsWith("__MACOSX")) {
-                        runCatching { zis.closeEntry() }
-                        continue
+        try {
+            FileInputStream(multipartFile).use { fis ->
+                var skipped = 0L
+                while (skipped < zipStartOffset) {
+                    val s = fis.skip(zipStartOffset - skipped)
+                    if (s <= 0) break
+                    skipped += s
+                }
+                var remaining = (zipEndOffset - zipStartOffset).coerceAtLeast(0L)
+                val buf = ByteArray(32 * 1024)
+                FileOutputStream(cleanZipFile).use { fos ->
+                    while (remaining > 0L) {
+                        val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                        val r = fis.read(buf, 0, toRead)
+                        if (r <= 0) break
+                        fos.write(buf, 0, r)
+                        remaining -= r
                     }
-
-                    val outFile = File(targetDir, entryName)
-                    if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath)) {
-                        runCatching { zis.closeEntry() }
-                        continue
-                    }
-
-                    if (entry.isDirectory) {
-                        outFile.mkdirs()
-                    } else {
-                        outFile.parentFile?.mkdirs()
-                        FileOutputStream(outFile).use { outStream ->
-                            while (true) {
-                                val len = runCatching { zis.read(buffer) }.getOrDefault(-1)
-                                if (len <= 0) break
-                                outStream.write(buffer, 0, len)
-                            }
-                        }
-                        extractedCount++
-                    }
-                    runCatching { zis.closeEntry() }
+                    fos.flush()
                 }
             }
+
+            if (targetDir.exists()) {
+                targetDir.deleteRecursively()
+            }
+            targetDir.mkdirs()
+
+            var extractedCount = 0
+            val extractedViaZipFile = runCatching {
+                ZipFile(cleanZipFile).use { zf ->
+                    val buffer = ByteArray(16 * 1024)
+                    val entries = zf.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        val entryName = entry.name.replace('\\', '/').trimStart('/')
+                        if (entryName.isEmpty() || entryName.startsWith("__MACOSX")) continue
+
+                        val outFile = File(targetDir, entryName)
+                        if (!outFile.canonicalPath.startsWith(targetDir.canonicalPath)) continue
+
+                        if (entry.isDirectory) {
+                            outFile.mkdirs()
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            zf.getInputStream(entry).use { zis ->
+                                FileOutputStream(outFile).use { outStream ->
+                                    while (true) {
+                                        val len = zis.read(buffer)
+                                        if (len <= 0) break
+                                        outStream.write(buffer, 0, len)
+                                    }
+                                }
+                            }
+                            extractedCount++
+                        }
+                    }
+                }
+                true
+            }.getOrDefault(false)
+
+            if (!extractedViaZipFile || extractedCount == 0) {
+                FileInputStream(cleanZipFile).use { fis ->
+                    ZipInputStream(BufferedInputStream(fis)).use { zis ->
+                        val buffer = ByteArray(16 * 1024)
+                        var guard = 0
+                        while (guard++ < 25_000) {
+                            val entry = runCatching { zis.nextEntry }.getOrNull() ?: break
+                            val entryName = entry.name.replace('\\', '/').trimStart('/')
+                            if (entryName.isNotEmpty() && !entryName.startsWith("__MACOSX")) {
+                                val outFile = File(targetDir, entryName)
+                                if (outFile.canonicalPath.startsWith(targetDir.canonicalPath)) {
+                                    if (entry.isDirectory) {
+                                        outFile.mkdirs()
+                                    } else {
+                                        outFile.parentFile?.mkdirs()
+                                        FileOutputStream(outFile).use { outStream ->
+                                            while (true) {
+                                                val len = runCatching { zis.read(buffer) }.getOrDefault(-1)
+                                                if (len <= 0) break
+                                                outStream.write(buffer, 0, len)
+                                            }
+                                        }
+                                        extractedCount++
+                                    }
+                                }
+                            }
+                            if (runCatching { zis.closeEntry() }.isFailure) break
+                        }
+                    }
+                }
+            }
+
+            Log.i(TAG, "Archivo .ZIP descomprimido en ${targetDir.absolutePath} ($extractedCount archivos extraídos)")
+            return extractedCount
+        } finally {
+            runCatching { cleanZipFile.delete() }
         }
-        Log.i(TAG, "Archivo .ZIP descomprimido en ${targetDir.absolutePath} ($extractedCount archivos extraídos)")
-        return extractedCount
     }
 
     /**
@@ -627,7 +1102,6 @@ class EmbeddedControlPlaneServer(
      */
     private fun findZipMagicOffset(file: File): Long {
         FileInputStream(file).use { fis ->
-            // La cabecera multipart antes del archivo suele medir menos de 16KB
             val searchLimit = minOf(file.length(), 128L * 1024L).toInt()
             val buf = ByteArray(searchLimit)
             var total = 0
@@ -647,6 +1121,36 @@ class EmbeddedControlPlaneServer(
             }
         }
         return -1L
+    }
+
+    /**
+     * Localiza el final del archivo `.ZIP` buscando la firma End of Central Directory (`PK\x05\x06`)
+     * en los últimos 66KB del archivo multipart.
+     */
+    private fun findZipEndOffset(file: File, startOffset: Long): Long {
+        return runCatching {
+            val len = file.length()
+            val tailSize = minOf(len - startOffset, 66_000L).toInt()
+            if (tailSize < 22) return len
+            val tailStart = len - tailSize
+            val buf = ByteArray(tailSize)
+            RandomAccessFile(file, "r").use { raf ->
+                raf.seek(tailStart)
+                raf.readFully(buf)
+            }
+            for (i in (tailSize - 22) downTo 0) {
+                if (buf[i] == 0x50.toByte() &&
+                    buf[i + 1] == 0x4B.toByte() &&
+                    buf[i + 2] == 0x05.toByte() &&
+                    buf[i + 3] == 0x06.toByte()
+                ) {
+                    val commentLen = ((buf[i + 20].toInt() and 0xFF)) or ((buf[i + 21].toInt() and 0xFF) shl 8)
+                    val endPos = tailStart + i + 22 + commentLen
+                    return endPos.coerceAtMost(len)
+                }
+            }
+            len
+        }.getOrDefault(file.length())
     }
 
     private fun drainChunkedBody(input: InputStream): String {
