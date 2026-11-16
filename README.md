@@ -19,6 +19,10 @@
   <a href="https://github.com/fernandoariasprogramador-code/CajitaPasS/actions/workflows/build-apk.yml">
     <img src="https://img.shields.io/badge/⚙️_Compilaciones-GitHub_Actions-1890FF?style=for-the-badge&logo=githubactions&logoColor=white" alt="GitHub Actions APK" />
   </a>
+  &nbsp;
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/Licencia-Personal_y_No_Comercial-FF9900?style=for-the-badge&logo=shield" alt="Licencia Personal" />
+  </a>
 </p>
 
 ---
@@ -306,6 +310,13 @@ Para ingenieros, desarrolladores y curiosos del funcionamiento a bajo nivel:
 
 ---
 
-## 📄 Licencia
+## 📄 Licencia y Copyright
 
-Este proyecto se distribuye bajo la licencia **MIT**. Eres libre de usarlo, modificarlo y adaptarlo para proyectos personales o comerciales.
+Copyright (c) 2026 **Fernando Arias**. Todos los derechos reservados.
+
+Este proyecto se distribuye bajo una **Licencia de Uso Personal, Educativo y No Comercial** (*Source-Available / Non-Commercial*).
+
+- ✅ **Permitido**: Eres libre de descargar, compilar, modificar y utilizar este software de forma totalmente gratuita para tus proyectos personales, familiares, domésticos, educativos, de estudio o investigación sin fines de lucro.
+- ❌ **Prohibido sin autorización**: Queda expresamente prohibida la comercialización, reventa, sublicenciamiento o utilización de este software (total o parcial) en plataformas, empresas o productos lucrativos, así como ofrecerlo como servicio de hosting o infraestructura PaaS/SaaS de pago a terceros sin el consentimiento previo y por escrito del autor.
+
+Para leer los términos legales completos, consulta el archivo [LICENSE](./LICENSE).

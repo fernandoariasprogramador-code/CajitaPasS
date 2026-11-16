@@ -1,0 +1,41 @@
+LICENCIA DE SOFTWARE PARA USO PERSONAL Y NO COMERCIAL
+(PERSONAL AND NON-COMMERCIAL SOFTWARE LICENSE)
+
+Copyright (c) 2026 Fernando Arias. Todos los derechos reservados.
+
+Por la presente se concede permiso, libre de cargos, a cualquier persona que obtenga una copia de este software y los archivos de documentación asociados (el "Software"), para usar, copiar, estudiar, compilar y modificar el Software, sujeto a las siguientes condiciones:
+
+1. USO PERMITIDO (PERSONAL, EDUCATIVO Y HOBBY):
+   El Software únicamente podrá ser utilizado para fines personales, domésticos, educativos, de estudio, de investigación o de hobby sin fines de lucro.
+
+2. RESTRICCIÓN DE USO COMERCIAL:
+   Queda estrictamente PROHIBIDO cualquier uso comercial, lucrativo, empresarial o monetizado del Software, ya sea en forma de código fuente o binario compilado (APK, imágenes ejecutables o paquetes de distribución). Esto incluye, de forma enunciativa pero no limitativa:
+   a) Venta, reventa, alquiler, sublicenciamiento o distribución comercial del Software o de obras derivadas.
+   b) Incorporación total o parcial del Software en productos, aplicaciones, plataformas o servicios comerciales.
+   c) Uso del Software para alojar servicios comerciales o como base para ofrecer servicios de infraestructura en la nube (PaaS / SaaS / Hosting) con cobro a terceros.
+   Cualquier persona o empresa interesada en un uso comercial, institucional o corporativo debe solicitar previamente una autorización por escrito o una licencia comercial al titular de los derechos de autor (Fernando Arias).
+
+3. AVISO DE DERECHOS DE AUTOR:
+   El aviso de copyright anterior y este aviso de términos deberán incluirse en todas las copias o partes sustanciales del Software y en los repositorios o distribuciones que deriven de él.
+
+4. EXENCIÓN DE GARANTÍA Y RESPONSABILIDAD:
+   EL SOFTWARE SE PROPORCIONA "TAL CUAL" (AS IS), SIN GARANTÍA DE NINGÚN TIPO, EXPRESA O IMPLÍCITA, INCLUYENDO PERO SIN LIMITARSE A LAS GARANTÍAS DE COMERCIABILIDAD, IDONEIDAD PARA UN PROPÓSITO PARTICULAR Y NO INFRACCIÓN. EN NINGÚN CASO EL AUTOR O TITULAR DEL COPYRIGHT SERÁ RESPONSABLE DE NINGÚN RECLAMO, DAÑO O PERJUICIO DIRECTO O INDIRECTO, YA SEA EN UNA ACCIÓN CONTRACTUAL O EXTRACONTRACTUAL, DERIVADO DEL USO O RENDIMIENTO DE ESTE SOFTWARE.
+
+================================================================================
+
+ENGLISH SUMMARY / TERMS:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, merge, and compile the Software solely for personal, non-commercial,
+educational, and hobbyist purposes, subject to the following conditions:
+
+1. Non-Commercial Use Only: Commercial use, monetization, resale, sublicensing,
+   or deployment of the Software as a paid public service (such as a commercial
+   PaaS, SaaS, or hosting platform) is strictly prohibited without prior written
+   consent from the copyright holder.
+2. Attribution: The above copyright notice and this permission notice shall be
+   included in all copies or substantial portions of the Software.
+3. Disclaimer: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+   CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
