@@ -43,7 +43,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         const val DEFAULT_DB_PASS = "cajitapaas2026"
         const val DEFAULT_DB_NAME = "cajitapaas"
         private const val BUNDLE_ASSET_NAME = "mariadb_alpine_bundle.zip"
-        private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v4_ready"
+        private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v5_ready"
     }
 
     private val prefs by lazy {

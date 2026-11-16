@@ -24,6 +24,7 @@ jobs:
         with:
           distribution: "temurin"
           java-version: "17"
+          cache: "gradle"
 
       - name: 3. Configurar Android SDK y Gradle 8.9 (Compatible con AGP 8.5)
         run: |
@@ -70,20 +71,28 @@ jobs:
         working-directory: ./android
         run: |
           set -o pipefail
-          /tmp/gradle-dist/gradle-8.9/bin/gradle assembleDebug --no-daemon --stacktrace --console=plain 2>&1 | tee /tmp/gradle_build.log || {
-            echo "::error title=Gradle Build Failed::Error durante la compilación en Gradle"
-            grep -E "(e: |error:|FAILURE:|Exception)" /tmp/gradle_build.log | tail -n 20 | while IFS= read -r l; do
-              [ -n "$l" ] && echo "::error title=Compiler::$l"
-            done
-            tail -n 25 /tmp/gradle_build.log | while IFS= read -r l; do
-              [ -n "$l" ] && echo "::error title=Tail::$l"
-            done
-            echo "## ❌ Error de Compilación en Gradle" >> $GITHUB_STEP_SUMMARY
-            echo '```text' >> $GITHUB_STEP_SUMMARY
-            tail -n 120 /tmp/gradle_build.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit 1
-          }
+          GRADLE_BIN="/tmp/gradle-dist/gradle-8.9/bin/gradle"
+          GRADLE_FLAGS="assembleDebug --no-daemon --stacktrace --console=plain"
+
+          echo "Compilando APK de CajitaPaaS con Gradle..."
+          if ! $GRADLE_BIN $GRADLE_FLAGS 2>&1 | tee /tmp/gradle_build.log; then
+            echo "::warning title=Gradle Retry::Primer intento finalizó con error (posible rate limit 429 en Maven Central). Reintentando en 10s..."
+            sleep 10
+            if ! $GRADLE_BIN $GRADLE_FLAGS 2>&1 | tee /tmp/gradle_build.log; then
+              echo "::error title=Gradle Build Failed::Error durante la compilación en Gradle"
+              grep -E "(e: |error:|FAILURE:|Exception|429 Too Many Requests)" /tmp/gradle_build.log | tail -n 25 | while IFS= read -r l; do
+                [ -n "$l" ] && echo "::error title=Compiler::$l"
+              done
+              tail -n 25 /tmp/gradle_build.log | while IFS= read -r l; do
+                [ -n "$l" ] && echo "::error title=Tail::$l"
+              done
+              echo "## ❌ Error de Compilación en Gradle" >> $GITHUB_STEP_SUMMARY
+              echo '```text' >> $GITHUB_STEP_SUMMARY
+              tail -n 120 /tmp/gradle_build.log >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+          fi
 
           echo "## ✅ Compilación en Gradle Exitosa" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY

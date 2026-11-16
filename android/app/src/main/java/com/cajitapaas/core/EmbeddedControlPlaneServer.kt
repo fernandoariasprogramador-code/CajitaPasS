@@ -228,6 +228,8 @@ class EmbeddedControlPlaneServer(
             const net = require('net');
             const dns = require('dns');
             const Module = require('module');
+            const path = require('path');
+            const fs = require('fs');
 
             if (dns.setDefaultResultOrder) {
               dns.setDefaultResultOrder('ipv4first');
@@ -254,6 +256,21 @@ class EmbeddedControlPlaneServer(
               return paths;
             };
 
+            const origResolveFilename = Module._resolveFilename;
+            Module._resolveFilename = function(request, parent, isMain, options) {
+              try {
+                return origResolveFilename.call(this, request, parent, isMain, options);
+              } catch (err) {
+                if (globalModPath && !request.startsWith('.') && !request.startsWith('/')) {
+                  const candidate = path.join(globalModPath, request);
+                  if (fs.existsSync(candidate)) {
+                    return origResolveFilename.call(this, candidate, parent, isMain, options);
+                  }
+                }
+                throw err;
+              }
+            };
+
             const origLoad = Module._load;
             Module._load = function(request, parent, isMain) {
               if (request === 'bcrypt') {
@@ -266,6 +283,9 @@ class EmbeddedControlPlaneServer(
               const mod = origLoad.apply(this, arguments);
               if ((request === 'mariadb' || request === 'mysql2' || request === 'mysql2/promise' || request === 'mysql') && mod) {
                 const patchCfg = (cfg) => {
+                  if (typeof cfg === 'string') {
+                    return cfg.replace('localhost', '127.0.0.1');
+                  }
                   if (!cfg || typeof cfg !== 'object') return cfg;
                   const copy = Object.assign({}, cfg);
                   if (!copy.host || copy.host === 'localhost') copy.host = '127.0.0.1';
@@ -394,6 +414,9 @@ class EmbeddedControlPlaneServer(
         for (parentDir in listOf(context.filesDir, deployedAppsBaseDir)) {
             val link = File(parentDir, "node_modules")
             runCatching {
+                if (java.nio.file.Files.isSymbolicLink(link.toPath())) {
+                    java.nio.file.Files.deleteIfExists(link.toPath())
+                }
                 if (!link.exists()) {
                     Os.symlink(globalDir.absolutePath, link.absolutePath)
                 }
@@ -401,16 +424,25 @@ class EmbeddedControlPlaneServer(
         }
 
         val appNodeModules = File(appRoot, "node_modules")
-        if (!appNodeModules.exists()) {
-            runCatching {
+        runCatching {
+            if (java.nio.file.Files.isSymbolicLink(appNodeModules.toPath())) {
+                val target = runCatching { java.nio.file.Files.readSymbolicLink(appNodeModules.toPath()) }.getOrNull()
+                if (target == null || target.toString() != globalDir.absolutePath || !appNodeModules.exists()) {
+                    java.nio.file.Files.deleteIfExists(appNodeModules.toPath())
+                    Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
+                }
+            } else if (!appNodeModules.exists()) {
                 Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
-            }
-        } else if (appNodeModules.isDirectory) {
-            val globalPkgs = globalDir.listFiles() ?: emptyArray()
-            for (pkg in globalPkgs) {
-                val targetPkg = File(appNodeModules, pkg.name)
-                if (!targetPkg.exists()) {
-                    runCatching {
+            } else if (appNodeModules.isDirectory) {
+                val globalPkgs = globalDir.listFiles() ?: emptyArray()
+                for (pkg in globalPkgs) {
+                    val targetPkg = File(appNodeModules, pkg.name)
+                    if (java.nio.file.Files.isSymbolicLink(targetPkg.toPath())) {
+                        if (!targetPkg.exists()) {
+                            java.nio.file.Files.deleteIfExists(targetPkg.toPath())
+                            Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
+                        }
+                    } else if (!targetPkg.exists()) {
                         Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
                     }
                 }
