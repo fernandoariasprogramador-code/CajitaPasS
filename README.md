@@ -51,7 +51,7 @@ Tienes **dos opciones** para descargar el instalador en tu teléfono Android (ar
 
 ### Opción 1: Descarga Directa (Recomendada) ⚡
 
-👉 **[Haz clic aquí para descargar `CajitaPaaS-CPS-ARM64.apk`](https://github.com/fernandoariasprogramador-code/CajitaPasS/releases/latest/download/CajitaPaaS-CPS-ARM64.apk)** *(o entra a la sección de [Releases de GitHub](https://github.com/fernandoariasprogramador-code/CajitaPasS/releases))*.
+👉 **[Haz clic aquí para descargar `CajitaPaaS-CPS-ARM64.apk`](https://github.com/fernandoariasprogramador-code/CajitaPasS/releases/latest/download/CajitaPaaS-CPS-ARM64.apk)** _(o entra a la sección de [Releases de GitHub](https://github.com/fernandoariasprogramador-code/CajitaPasS/releases))_.
 
 ### Opción 2: Descargar desde GitHub Actions 🛠️
 
@@ -89,23 +89,25 @@ El panel de CajitaPaaS te permite desplegar dos tipos de aplicaciones: **Fronten
 - **Qué comprimir**: Comprime tus archivos fuente: `server.js` (o `index.js`, `app.js`), tus carpetas de rutas (`routes/`), controladores (`controllers/`), modelos (`models/`), y tu `package.json` o `.env` (si los tienes).
 
 > [!WARNING]
+>
 > ### ⚠️ REGLA DE ORO: ¡NUNCA INCLUYAS LA CARPETA `node_modules` EN EL ZIP!
 >
 > ❌ **No subas `node_modules` en tu archivo `.zip`**.
 >
 > **¿Por qué?**
+>
 > 1. **Incompatibilidad de Arquitectura**: Los módulos con binarios nativos compilados en tu PC (Windows o Mac x86_64) fallarán al ejecutarse en el procesador ARM64 de tu teléfono Android.
 > 2. **Peso Innecesario**: Subir 100 MB o 300 MB de módulos ralentiza innecesariamente la subida y satura la memoria del celular.
 > 3. **CajitaPaaS ya incluye los paquetes preinstalados**: El motor de CPS viene equipado de fábrica con los paquetes más populares optimizados para ARM64.
 
 #### 📚 Módulos Node.js incluidos de fábrica en CajitaPaaS:
 
-| Categoría | Módulos Preinstalados en el Runtime |
-| :--- | :--- |
-| **Bases de Datos** | `mariadb`, `mysql2`, `mysql` |
-| **Framework & Web** | `express`, `cors`, `dotenv`, `axios`, `multer` |
-| **Autenticación & Seguridad** | `jsonwebtoken`, `bcryptjs`, `bcrypt` |
-| **Utilidades** | `uuid`, `path`, `fs`, `crypto`, `http`, etc. |
+| Categoría                     | Módulos Preinstalados en el Runtime            |
+| :---------------------------- | :--------------------------------------------- |
+| **Bases de Datos**            | `mariadb`, `mysql2`, `mysql`                   |
+| **Framework & Web**           | `express`, `cors`, `dotenv`, `axios`, `multer` |
+| **Autenticación & Seguridad** | `jsonwebtoken`, `bcryptjs`, `bcrypt`           |
+| **Utilidades**                | `uuid`, `path`, `fs`, `crypto`, `http`, etc.   |
 
 Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcionarán inmediatamente sin necesidad de subirlos ni instalarlos**.
 
@@ -117,9 +119,9 @@ CajitaPaaS inyecta automáticamente variables de entorno en el proceso de tu API
 
 ```javascript
 // server.js
-const express = require('express');
-const mariadb = require('mariadb');
-const cors = require('cors');
+const express = require("express");
+const mariadb = require("mariadb");
+const cors = require("cors");
 
 const app = express();
 app.use(cors());
@@ -127,33 +129,35 @@ app.use(express.json());
 
 // Variables automáticas inyectadas por CajitaPaaS:
 const pool = mariadb.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
+  host: process.env.DB_HOST || "127.0.0.1",
   port: Number(process.env.DB_PORT) || 3306,
-  user: process.env.DB_USER || 'cajita_admin',
-  password: process.env.DB_PASSWORD || 'cajitapaas2026',
-  database: process.env.DB_NAME || 'cajitapaas',
-  connectionLimit: 5
+  user: process.env.DB_USER || "cajita_admin",
+  password: process.env.DB_PASSWORD || "cajitapaas2026",
+  database: process.env.DB_NAME || "cajitapaas",
+  connectionLimit: 5,
 });
 
 // Endpoint de prueba de salud
-app.get('/api/status', (req, res) => {
+app.get("/api/status", (req, res) => {
   res.json({
-    status: 'online',
-    app: process.env.CPS_APP_NAME || 'mi-api',
-    db: process.env.DB_NAME || 'cajitapaas',
-    timestamp: new Date().toISOString()
+    status: "online",
+    app: process.env.CPS_APP_NAME || "mi-api",
+    db: process.env.DB_NAME || "cajitapaas",
+    timestamp: new Date().toISOString(),
   });
 });
 
 // Endpoint que consulta la base de datos
-app.get('/api/tareas', async (req, res) => {
+app.get("/api/tareas", async (req, res) => {
   let conn;
   try {
     conn = await pool.getConnection();
-    const rows = await conn.query('SELECT * FROM tareas');
+    const rows = await conn.query("SELECT * FROM tareas");
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: 'Error en base de datos', detalle: err.message });
+    res
+      .status(500)
+      .json({ error: "Error en base de datos", detalle: err.message });
   } finally {
     if (conn) conn.release();
   }
@@ -161,7 +165,7 @@ app.get('/api/tareas', async (req, res) => {
 
 // Puerto asignado dinámicamente por CajitaPaaS (ej: 3001, 3003, etc.)
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Backend API escuchando en el puerto ${PORT}`);
 });
 ```
@@ -194,16 +198,17 @@ Puedes administrar tus bases de datos, crear tablas, importar dumps `.sql` o rev
 2. Presiona **Activar Puente DBeaver**.
 3. En tu PC (en la misma red Wi-Fi), abre **DBeaver** o **MySQL Workbench** y crea una nueva conexión tipo **MySQL** o **MariaDB** con los siguientes datos:
 
-| Parámetro | Valor de Conexión |
-| :--- | :--- |
-| **Host / Servidor** | La IP Wi-Fi de tu celular (ej: `192.168.1.145`) o `127.0.0.1` |
-| **Puerto** | `3306` (o `13306`) |
-| **Usuario** | `cajita_admin` |
-| **Contraseña** | `cajitapaas2026` |
-| **Base de Datos inicial** | `cajitapaas` |
+| Parámetro                 | Valor de Conexión                                             |
+| :------------------------ | :------------------------------------------------------------ |
+| **Host / Servidor**       | La IP Wi-Fi de tu celular (ej: `192.168.1.145`) o `127.0.0.1` |
+| **Puerto**                | `3306` (o `13306`)                                            |
+| **Usuario**               | `cajita_admin`                                                |
+| **Contraseña**            | `cajitapaas2026`                                              |
+| **Base de Datos inicial** | `cajitapaas`                                                  |
 
 > [!TIP]
 > Desde DBeaver puedes ejecutar sentencias SQL completas, como crear nuevas bases de datos para tus distintas aplicaciones:
+>
 > ```sql
 > CREATE DATABASE IF NOT EXISTS app_pruebas;
 > USE app_pruebas;
@@ -221,12 +226,12 @@ Puedes administrar tus bases de datos, crear tablas, importar dumps `.sql` o rev
 
 Cuando tus aplicaciones están encendidas, **CPS** organiza los puertos en tu red local Wi-Fi y en el Túnel Público de Cloudflare:
 
-| Servicio / Rol | Puerto en Red Local (Wi-Fi) | Ruta en Túnel Público (`https://*.trycloudflare.com`) | Descripción |
-| :--- | :--- | :--- | :--- |
-| **🎨 Frontend Principal** | **`:8080`** *(y `:80` en celulares con Root)* | `/` *(Raíz del enlace)* | Sirve tu interfaz web o SPA compilada. |
-| **⚙️ Backend / API** | **`:3001`**, **`:3003`**, etc. *(y proxy en `:8080/api/`)* | `/api/*` | Cada backend tiene su puerto dedicado en la LAN y además un proxy unificado bajo `/api/` en el `:8080`. |
-| **🛠️ Panel de Control CPS** | **`:4000`** | `/_control/` | Panel administrativo para desplegar, monitorear y gestionar el sistema. |
-| **🗄️ Base de Datos MariaDB** | **`:3306`** *(y `:13306`)* | *Solo Red Local (LAN)* | Acceso directo de administración SQL para DBeaver o scripts locales. |
+| Servicio / Rol               | Puerto en Red Local (Wi-Fi)                                | Ruta en Túnel Público (`https://*.trycloudflare.com`) | Descripción                                                                                             |
+| :--------------------------- | :--------------------------------------------------------- | :---------------------------------------------------- | :------------------------------------------------------------------------------------------------------ |
+| **🎨 Frontend Principal**    | **`:8080`** _(y `:80` en celulares con Root)_              | `/` _(Raíz del enlace)_                               | Sirve tu interfaz web o SPA compilada.                                                                  |
+| **⚙️ Backend / API**         | **`:3001`**, **`:3003`**, etc. _(y proxy en `:8080/api/`)_ | `/api/*`                                              | Cada backend tiene su puerto dedicado en la LAN y además un proxy unificado bajo `/api/` en el `:8080`. |
+| **🛠️ Panel de Control CPS**  | **`:4000`**                                                | `/_control/`                                          | Panel administrativo para desplegar, monitorear y gestionar el sistema.                                 |
+| **🗄️ Base de Datos MariaDB** | **`:3306`** _(y `:13306`)_                                 | _Solo Red Local (LAN)_                                | Acceso directo de administración SQL para DBeaver o scripts locales.                                    |
 
 ---
 
@@ -235,7 +240,9 @@ Cuando tus aplicaciones están encendidas, **CPS** organiza los puertos en tu re
 Si despliegas un Frontend y una API por separado, puedes comunicarlos fácilmente con cualquiera de estas opciones:
 
 #### Opción 1: Rutas relativas `/api/...` (Recomendada ⭐)
+
 El Gateway interno de CajitaPaaS en el puerto `:8080` (y el túnel HTTPS de Cloudflare) unifica ambos servicios bajo el mismo origen:
+
 ```javascript
 // Funciona idéntico en tu Wi-Fi local y a través de Internet
 const res = await fetch("/api/tareas");
@@ -243,10 +250,13 @@ const tareas = await res.json();
 ```
 
 #### Opción 2: Puente Automático de `localhost` (Sin modificar código)
+
 Si tu Frontend ya fue compilado apuntando a `http://localhost:3001` o `http://127.0.0.1:3000`, CajitaPaaS inyecta un interceptor inteligente al servir el `index.html` que redirige dinámicamente esas peticiones a la IP real del celular en tu LAN o a la ruta segura `/api/` por HTTPS cuando se accede desde Internet.
 
 #### Opción 3: Variables inyectadas en el navegador
+
 CPS expone variables globales en el cliente:
+
 - `window.CPS_API_URL`: Apunta a la dirección directa de tu backend.
 - `window.CPS_GATEWAY_API_URL`: Apunta al proxy unificado `/api`.
 
@@ -295,7 +305,7 @@ Para ingenieros, desarrolladores y curiosos del funcionamiento a bajo nivel:
 - **Ejecución ELF Nativa sin Root ni PRoot Pesado**: Tanto MariaDB como Node.js se ejecutan directamente en el espacio de bibliotecas nativas de la aplicación (`extractNativeLibs="true"`), utilizando una capa de enlace Alpine musl (`libalpine_musl.so`) para satisfacer las llamadas al sistema Linux en Android respetando las restricciones de memoria W^X (Write XOR Execute).
 - **Extracción de Assets de Alta Velocidad**: La inicialización del motor utiliza `ZipFile` nativo de C++ para descomprimir los componentes de MariaDB y las bibliotecas Node.js en segundos durante el primer arranque.
 - **Preloader Node (`cps_node_preload.cjs`)**: Intercepta la resolución de módulos de Node.js mediante parcheo de `Module._resolveFilename` y `Module.globalPaths`, permitiendo que cualquier aplicación invoque `require('express')` o `require('mariadb')` desde la librería central compartida de CajitaPaaS.
-- **Failover / Failback de Red (Supervivencia Wi-Fi)**: Monitorea el estado de la red mediante `ConnectivityManager.NetworkCallback`. En dispositivos con hardware de antena única (*single-radio*, ej: Moto G8), realiza ciclos de sondeo desactivando momentáneamente el Hotspot para verificar si el módem principal ha vuelto a encenderse.
+- **Failover / Failback de Red (Supervivencia Wi-Fi)**: Monitorea el estado de la red mediante `ConnectivityManager.NetworkCallback`. En dispositivos con hardware de antena única (_single-radio_, ej: Moto G8), realiza ciclos de sondeo desactivando momentáneamente el Hotspot para verificar si el módem principal ha vuelto a encenderse.
 
 ---
 
@@ -314,7 +324,7 @@ Para ingenieros, desarrolladores y curiosos del funcionamiento a bajo nivel:
 
 Copyright (c) 2026 **Fernando Arias**. Todos los derechos reservados.
 
-Este proyecto se distribuye bajo una **Licencia de Uso Personal, Educativo y No Comercial** (*Source-Available / Non-Commercial*).
+Este proyecto se distribuye bajo una **Licencia de Uso Personal, Educativo y No Comercial** (_Source-Available / Non-Commercial_).
 
 - ✅ **Permitido**: Eres libre de descargar, compilar, modificar y utilizar este software de forma totalmente gratuita para tus proyectos personales, familiares, domésticos, educativos, de estudio o investigación sin fines de lucro.
 - ❌ **Prohibido sin autorización**: Queda expresamente prohibida la comercialización, reventa, sublicenciamiento o utilización de este software (total o parcial) en plataformas, empresas o productos lucrativos, así como ofrecerlo como servicio de hosting o infraestructura PaaS/SaaS de pago a terceros sin el consentimiento previo y por escrito del autor.
