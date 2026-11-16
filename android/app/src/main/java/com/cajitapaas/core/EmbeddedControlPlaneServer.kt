@@ -233,6 +233,10 @@ class EmbeddedControlPlaneServer(
               dns.setDefaultResultOrder('ipv4first');
             }
 
+            if (typeof BigInt !== 'undefined' && !BigInt.prototype.toJSON) {
+              BigInt.prototype.toJSON = function() { return Number(this); };
+            }
+
             process.on('unhandledRejection', (reason) => {
               console.error('[CPS-UnhandledRejection]', reason);
             });
@@ -260,12 +264,17 @@ class EmbeddedControlPlaneServer(
                 }
               }
               const mod = origLoad.apply(this, arguments);
-              if ((request === 'mysql2' || request === 'mysql2/promise' || request === 'mysql') && mod) {
+              if ((request === 'mariadb' || request === 'mysql2' || request === 'mysql2/promise' || request === 'mysql') && mod) {
                 const patchCfg = (cfg) => {
                   if (!cfg || typeof cfg !== 'object') return cfg;
                   const copy = Object.assign({}, cfg);
                   if (!copy.host || copy.host === 'localhost') copy.host = '127.0.0.1';
                   if (!copy.port) copy.port = 3306;
+                  if (request === 'mariadb') {
+                    if (copy.allowPublicKeyRetrieval === undefined) copy.allowPublicKeyRetrieval = true;
+                    if (copy.insertIdAsNumber === undefined) copy.insertIdAsNumber = true;
+                    if (copy.bigIntAsNumber === undefined) copy.bigIntAsNumber = true;
+                  }
                   if (!copy.password && process.env.DB_PASSWORD) {
                     copy.password = process.env.DB_PASSWORD;
                   }

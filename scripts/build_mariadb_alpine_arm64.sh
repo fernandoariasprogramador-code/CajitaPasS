@@ -61,9 +61,9 @@ done
 sort -u "$STAGE_DIR/libs_map.txt" -o "$STAGE_DIR/libs_map.txt"
 cp -f "$STAGE_DIR/libs_map.txt" "$ASSETS_DIR/mariadb_libs_map.txt"
 
-# 4. Pre-instalar paquetes esenciales de Node.js para que APIs subidas sin node_modules funcionen directo
+# 4. Pre-instalar paquetes esenciales de Node.js (incluyendo 'mariadb', 'mysql2', 'mysql', 'express', etc.)
 npm install --prefix "$STAGE_DIR/node_global" --no-audit --no-fund --silent \
-  express cors mysql2 mysql dotenv body-parser cookie-parser morgan helmet jsonwebtoken bcryptjs uuid axios multer express-validator
+  mariadb express cors mysql2 mysql dotenv body-parser cookie-parser morgan helmet jsonwebtoken bcryptjs uuid axios multer express-validator compression http-errors
 
 # Crear alias de 'bcrypt' apuntando a 'bcryptjs' (puro JS) para evitar fallos de binarios Windows .node en ARM64
 MODS_DIR="$STAGE_DIR/node_global/node_modules"
