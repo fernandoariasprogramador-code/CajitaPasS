@@ -62,6 +62,10 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         File(mariadbRootDir, "share")
     }
 
+    private val libSymlinkDir by lazy {
+        File(mariadbRootDir, "lib").apply { mkdirs() }
+    }
+
     private val tmpDir by lazy {
         File(mariadbRootDir, "tmp").apply { mkdirs() }
     }
@@ -159,6 +163,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
         if (marker.exists() && mysqlSystemDir.exists() && errmsgFile.exists()) {
             tmpDir.mkdirs()
+            ensureLibrarySymlinks()
             writeMyCnfConfiguration()
             return
         }
@@ -207,9 +212,41 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             }
         }
 
+        ensureLibrarySymlinks()
         writeMyCnfConfiguration()
         marker.writeText("alpine-mariadb-arm64-ready")
         Log.i(TAG, "Entorno MariaDB Alpine extraído con éxito en ${mariadbRootDir.absolutePath}")
+    }
+
+    /**
+     * Crea enlaces simbólicos en `filesDir/mariadb_alpine/lib/<SONAME>` apuntando a los archivos
+     * `libalpine_*.so` extraídos en `nativeLibraryDir` (contexto SELinux `apk_data_file`),
+     * permitiendo que `ld-musl` cargue las librerías oficiales sin modificar las cabeceras ELF.
+     */
+    private fun ensureLibrarySymlinks() {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        libSymlinkDir.mkdirs()
+
+        val mapFile = File(mariadbRootDir, "libs_map.txt")
+        val lines = when {
+            mapFile.exists() -> runCatching { mapFile.readLines() }.getOrDefault(emptyList())
+            else -> runCatching {
+                context.assets.open("mariadb_libs_map.txt").bufferedReader().use { it.readLines() }
+            }.getOrDefault(emptyList())
+        }
+
+        for (line in lines) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || !trimmed.contains("=")) continue
+            val soname = trimmed.substringBefore("=").trim()
+            val apkSoName = trimmed.substringAfter("=").trim()
+            val targetFile = File(nativeLibDir, apkSoName)
+            val linkFile = File(libSymlinkDir, soname)
+            runCatching {
+                if (linkFile.exists()) linkFile.delete()
+                Os.symlink(targetFile.absolutePath, linkFile.absolutePath)
+            }
+        }
     }
 
     private fun writeMyCnfConfiguration() {
@@ -281,10 +318,11 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
         runCatching { mariadbProcess?.destroyForcibly() }
 
+        val libSearchPath = "${libSymlinkDir.absolutePath}:$nativeLibDir"
         val args = listOf(
             muslLinker.absolutePath,
             "--library-path",
-            nativeLibDir,
+            libSearchPath,
             mariadbdBin.absolutePath,
             "--defaults-file=${myCnfFile.absolutePath}"
         )
@@ -297,7 +335,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         val env = pb.environment()
         env["HOME"] = mariadbRootDir.absolutePath
         env["TMPDIR"] = tmpDir.absolutePath
-        env["LD_LIBRARY_PATH"] = nativeLibDir
+        env["LD_LIBRARY_PATH"] = libSearchPath
 
         val proc = pb.start()
         mariadbProcess = proc
@@ -390,10 +428,11 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
         runCatching { Os.chmod(mariadbCliBin.absolutePath, 493) }
 
+        val libSearchPath = "${libSymlinkDir.absolutePath}:$nativeLibDir"
         val args = mutableListOf(
             muslLinker.absolutePath,
             "--library-path",
-            nativeLibDir,
+            libSearchPath,
             mariadbCliBin.absolutePath,
             "--no-defaults",
             "--protocol=TCP",
@@ -421,7 +460,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         val env = pb.environment()
         env["HOME"] = mariadbRootDir.absolutePath
         env["TMPDIR"] = tmpDir.absolutePath
-        env["LD_LIBRARY_PATH"] = nativeLibDir
+        env["LD_LIBRARY_PATH"] = libSearchPath
 
         val proc = pb.start()
         val stdoutFuture = executor.submit<String> {

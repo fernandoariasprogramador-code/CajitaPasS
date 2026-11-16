@@ -54,171 +54,20 @@ jobs:
           # Habilitar soporte multi-arquitectura ARM64 (QEMU) para empaquetar mariadb:alpine real
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
+          # Asegurar saltos de línea LF en scripts para el contenedor Alpine
+          sed -i 's/\r$//' scripts/build_mariadb_alpine_arm64.sh
+          chmod 755 scripts/build_mariadb_alpine_arm64.sh
+
           # Extraer e inicializar MariaDB Alpine ARM64 oficial (mariadbd + mariadb client + InnoDB datadir)
+          set -o pipefail
           docker run --rm --platform linux/arm64 \
             -v "$PWD:/workspace" \
-            alpine:3.20 sh -ex -c '
-              apk add --no-cache mariadb mariadb-client mariadb-common patchelf zip
-
-              JNI_DIR="/workspace/android/app/src/main/jniLibs/arm64-v8a"
-              ASSETS_DIR="/workspace/android/app/src/main/assets"
-              STAGE_DIR="/tmp/mariadb_stage"
-              mkdir -p "$STAGE_DIR/lib" "$STAGE_DIR/data" "$STAGE_DIR/share" "$STAGE_DIR/tmp"
-
-              cp -L /lib/ld-musl-aarch64.so.1 "$STAGE_DIR/lib/libalpine_musl.so"
-              cp -L /usr/bin/mariadbd "$STAGE_DIR/lib/libmariadbd.so"
-              cp -L /usr/bin/mariadb "$STAGE_DIR/lib/libmariadb_cli.so"
-              chmod 755 "$STAGE_DIR/lib/libalpine_musl.so" "$STAGE_DIR/lib/libmariadbd.so" "$STAGE_DIR/lib/libmariadb_cli.so"
-
-              ldd /usr/bin/mariadbd /usr/bin/mariadb | awk "/=> \/.*\(0x/{print \$1 \"|\" \$3}" | sort -u > "$STAGE_DIR/raw_libs.txt"
-              while IFS="|" read -r old_so libpath; do
-                [ -z "$old_so" ] && continue
-                case "$old_so" in
-                  ld-musl*|libc.musl*) continue ;;
-                esac
-                stem=$(echo "$old_so" | sed -E "s/\.so(\.[0-9]+)*$//")
-                clean_stem=$(echo "${stem#lib}" | tr -c "a-zA-Z0-9_" "_")
-                new_so="libalpine_${clean_stem}.so"
-                cp -L "$libpath" "$STAGE_DIR/lib/$new_so"
-                chmod 755 "$STAGE_DIR/lib/$new_so"
-                patchelf --set-soname "$new_so" "$STAGE_DIR/lib/$new_so"
-                echo "$old_so|$new_so" >> "$STAGE_DIR/soname_map.txt"
-              done < "$STAGE_DIR/raw_libs.txt"
-
-              for elf in "$STAGE_DIR/lib/"*.so; do
-                [ "$(basename "$elf")" = "libalpine_musl.so" ] && continue
-                while IFS="|" read -r old_so new_so; do
-                  [ -z "$old_so" ] && continue
-                  patchelf --replace-needed "$old_so" "$new_so" "$elf" || true
-                done < "$STAGE_DIR/soname_map.txt"
+            alpine:3.20 /bin/sh /workspace/scripts/build_mariadb_alpine_arm64.sh 2>&1 | tee /tmp/alpine_mdb.log || {
+              tail -n 30 /tmp/alpine_mdb.log | while IFS= read -r l; do
+                [ -n "$l" ] && echo "::error title=MariaDB-Alpine::$l"
               done
-
-              for elf in "$STAGE_DIR/lib/"*.so; do
-                [ "$(basename "$elf")" = "libalpine_musl.so" ] && continue
-                for needed in $(patchelf --print-needed "$elf"); do
-                  case "$needed" in
-                    ld-musl*|libc.musl*) continue ;;
-                  esac
-                  if [ ! -f "$STAGE_DIR/lib/$needed" ]; then
-                    echo "ERROR: Librería faltante $needed en $elf"
-                    exit 1
-                  fi
-                done
-              done
-
-              cp -r /usr/share/mariadb/charsets "$STAGE_DIR/share/"
-              cp -r /usr/share/mariadb/english "$STAGE_DIR/share/"
-              [ -d /usr/share/mariadb/spanish ] && cp -r /usr/share/mariadb/spanish "$STAGE_DIR/share/" || true
-
-              cat <<CNF_EOF > "$STAGE_DIR/my.cnf"
-          [mysqld]
-          datadir=$STAGE_DIR/data
-          lc-messages-dir=$STAGE_DIR/share
-          character-sets-dir=$STAGE_DIR/share/charsets
-          tmpdir=$STAGE_DIR/tmp
-          socket=$STAGE_DIR/tmp/mysql.sock
-          pid-file=$STAGE_DIR/tmp/mariadbd.pid
-          port=13307
-          bind-address=127.0.0.1
-          skip-networking=0
-          skip-name-resolve
-          innodb-data-file-path=ibdata1:12M:autoextend
-          innodb-log-file-size=8M
-          innodb-buffer-pool-size=32M
-          innodb-use-native-aio=0
-          innodb-flush-method=fsync
-          performance-schema=OFF
-          character-set-server=utf8mb4
-          collation-server=utf8mb4_general_ci
-          default-storage-engine=InnoDB
-          CNF_EOF
-
-              mariadb-install-db \
-                --defaults-file="$STAGE_DIR/my.cnf" \
-                --user=root \
-                --basedir=/usr \
-                --datadir="$STAGE_DIR/data" \
-                --auth-root-authentication-method=normal \
-                --skip-test-db
-
-              "$STAGE_DIR/lib/libalpine_musl.so" --library-path "$STAGE_DIR/lib" "$STAGE_DIR/lib/libmariadbd.so" --version
-              "$STAGE_DIR/lib/libalpine_musl.so" --library-path "$STAGE_DIR/lib" "$STAGE_DIR/lib/libmariadb_cli.so" --version
-
-              "$STAGE_DIR/lib/libalpine_musl.so" --library-path "$STAGE_DIR/lib" "$STAGE_DIR/lib/libmariadbd.so" \
-                --defaults-file="$STAGE_DIR/my.cnf" \
-                --user=root &
-              MDB_PID=$!
-
-              for i in $(seq 1 30); do
-                if [ -S "$STAGE_DIR/tmp/mysql.sock" ]; then
-                  break
-                fi
-                sleep 1
-              done
-
-              "$STAGE_DIR/lib/libalpine_musl.so" --library-path "$STAGE_DIR/lib" "$STAGE_DIR/lib/libmariadb_cli.so" \
-                --no-defaults \
-                --socket="$STAGE_DIR/tmp/mysql.sock" \
-                -u root <<SQL_EOF
-          DROP USER IF EXISTS ""@"localhost";
-          CREATE DATABASE IF NOT EXISTS \`cajitapaas\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-          CREATE TABLE IF NOT EXISTS \`cajitapaas\`.\`deployments_audit\` (
-            \`id\` INT AUTO_INCREMENT PRIMARY KEY,
-            \`app_name\` VARCHAR(128) NOT NULL,
-            \`active_color\` VARCHAR(32) NOT NULL,
-            \`active_port\` INT NOT NULL,
-            \`deployed_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-          CREATE TABLE IF NOT EXISTS \`cajitapaas\`.\`info_sistema\` (
-            \`id\` INT AUTO_INCREMENT PRIMARY KEY,
-            \`clave\` VARCHAR(128) NOT NULL,
-            \`valor\` TEXT NOT NULL,
-            \`creado_en\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-          INSERT INTO \`cajitapaas\`.\`info_sistema\` (\`clave\`, \`valor\`) VALUES ("motor", "MariaDB Alpine ARM64 Oficial (InnoDB)");
-
-          ALTER USER "root"@"localhost" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          CREATE USER IF NOT EXISTS "root"@"127.0.0.1" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          ALTER USER "root"@"127.0.0.1" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          GRANT ALL PRIVILEGES ON *.* TO "root"@"127.0.0.1" WITH GRANT OPTION;
-          CREATE USER IF NOT EXISTS "root"@"%" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          ALTER USER "root"@"%" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          GRANT ALL PRIVILEGES ON *.* TO "root"@"%" WITH GRANT OPTION;
-
-          CREATE USER IF NOT EXISTS "cajita_admin"@"%" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          ALTER USER "cajita_admin"@"%" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          GRANT ALL PRIVILEGES ON *.* TO "cajita_admin"@"%" WITH GRANT OPTION;
-          CREATE USER IF NOT EXISTS "cajita_admin"@"127.0.0.1" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          ALTER USER "cajita_admin"@"127.0.0.1" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          GRANT ALL PRIVILEGES ON *.* TO "cajita_admin"@"127.0.0.1" WITH GRANT OPTION;
-          CREATE USER IF NOT EXISTS "cajita_admin"@"localhost" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          ALTER USER "cajita_admin"@"localhost" IDENTIFIED VIA mysql_native_password USING PASSWORD("cajitapaas2026");
-          GRANT ALL PRIVILEGES ON *.* TO "cajita_admin"@"localhost" WITH GRANT OPTION;
-
-          FLUSH PRIVILEGES;
-          SQL_EOF
-
-              # Verificar conexión TCP real como cajita_admin antes de empaquetar
-              "$STAGE_DIR/lib/libalpine_musl.so" --library-path "$STAGE_DIR/lib" "$STAGE_DIR/lib/libmariadb_cli.so" \
-                --no-defaults \
-                --protocol=TCP -h 127.0.0.1 -P 13307 -u cajita_admin -pcajitapaas2026 \
-                -e "SHOW DATABASES; SELECT * FROM cajitapaas.info_sistema;"
-
-              "$STAGE_DIR/lib/libalpine_musl.so" --library-path "$STAGE_DIR/lib" "$STAGE_DIR/lib/libmariadb_cli.so" \
-                --no-defaults \
-                --protocol=TCP -h 127.0.0.1 -P 13307 -u root -pcajitapaas2026 \
-                -e "SHUTDOWN;"
-
-              wait "$MDB_PID" || true
-              rm -rf "$STAGE_DIR/tmp"/* "$STAGE_DIR/data/"*.pid "$STAGE_DIR/data/"*.err
-
-              cd "$STAGE_DIR"
-              zip -r -9 "$ASSETS_DIR/mariadb_alpine_bundle.zip" data share
-
-              cp -f "$STAGE_DIR/lib/"*.so "$JNI_DIR/"
-              ls -lh "$JNI_DIR/"
-              ls -lh "$ASSETS_DIR/mariadb_alpine_bundle.zip"
-            '
+              exit 1
+            }
 
       - name: 5. Compilar APK (CajitaPaaS ARM64)
         working-directory: ./android
