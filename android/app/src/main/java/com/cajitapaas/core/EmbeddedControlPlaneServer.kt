@@ -194,11 +194,18 @@ class EmbeddedControlPlaneServer(
      * Detecta si el directorio desplegado de `appName` contiene una aplicación Node.js
      * y la ejecuta en segundo plano redirigiendo su puerto interno a `appPort + 10000` (ej. 13001).
      */
+    @Synchronized
     private fun startAppNodeProcessIfPresent(appName: String, appPort: Int) {
         val baseDir = File(deployedAppsBaseDir, appName)
         if (!baseDir.exists()) return
         val appRoot = resolveEffectiveAppRoot(baseDir)
         val entryScript = findNodeEntryScript(appRoot) ?: return
+
+        val existingProc = appProcesses[appName]
+        val internalNodePort = appPort + 10000
+        if (existingProc != null && existingProc.isAlive && isLocalPortOpen(internalNodePort, 150)) {
+            return
+        }
 
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val muslLinker = File(nativeLibDir, "libalpine_musl.so")
@@ -211,11 +218,72 @@ class EmbeddedControlPlaneServer(
         runCatching { Os.chmod(muslLinker.absolutePath, 493) }
         runCatching { Os.chmod(nodeBin.absolutePath, 493) }
 
-        val internalNodePort = appPort + 10000
-        val preloadFile = File(context.filesDir, "cps_node_preload.js")
+        val libSearchPath = dbEngine.getLibSearchPath()
+        val globalNodeModules = dbEngine.getNodeGlobalModulesPath()
+        ensureNodeModulesLinked(appRoot, globalNodeModules)
+
+        val preloadFile = File(context.filesDir, "cps_node_preload.cjs")
         preloadFile.writeText(
             """
             const net = require('net');
+            const dns = require('dns');
+            const Module = require('module');
+
+            if (dns.setDefaultResultOrder) {
+              dns.setDefaultResultOrder('ipv4first');
+            }
+
+            process.on('unhandledRejection', (reason) => {
+              console.error('[CPS-UnhandledRejection]', reason);
+            });
+            process.on('uncaughtException', (err) => {
+              console.error('[CPS-UncaughtException]', err);
+            });
+
+            const globalModPath = process.env.CPS_GLOBAL_NODE_MODULES || '';
+            const origResolveLookupPaths = Module._resolveLookupPaths;
+            Module._resolveLookupPaths = function(request, parent) {
+              const paths = origResolveLookupPaths.call(this, request, parent) || [];
+              if (globalModPath && !paths.includes(globalModPath)) {
+                paths.push(globalModPath);
+              }
+              return paths;
+            };
+
+            const origLoad = Module._load;
+            Module._load = function(request, parent, isMain) {
+              if (request === 'bcrypt') {
+                try {
+                  return origLoad.apply(this, arguments);
+                } catch (_e) {
+                  return origLoad.call(this, 'bcryptjs', parent, isMain);
+                }
+              }
+              const mod = origLoad.apply(this, arguments);
+              if ((request === 'mysql2' || request === 'mysql2/promise' || request === 'mysql') && mod) {
+                const patchCfg = (cfg) => {
+                  if (!cfg || typeof cfg !== 'object') return cfg;
+                  const copy = Object.assign({}, cfg);
+                  if (!copy.host || copy.host === 'localhost') copy.host = '127.0.0.1';
+                  if (!copy.port) copy.port = 3306;
+                  if (!copy.password && process.env.DB_PASSWORD) {
+                    copy.password = process.env.DB_PASSWORD;
+                  }
+                  return copy;
+                };
+                if (typeof mod.createPool === 'function' && !mod.__cpsPatched) {
+                  const origPool = mod.createPool;
+                  mod.createPool = function(cfg) { return origPool.call(this, patchCfg(cfg)); };
+                  const origConn = mod.createConnection;
+                  if (typeof origConn === 'function') {
+                    mod.createConnection = function(cfg) { return origConn.call(this, patchCfg(cfg)); };
+                  }
+                  mod.__cpsPatched = true;
+                }
+              }
+              return mod;
+            };
+
             const origListen = net.Server.prototype.listen;
             const targetPort = parseInt(process.env.CPS_INTERNAL_PORT || '$internalNodePort', 10);
             net.Server.prototype.listen = function(...args) {
@@ -231,35 +299,34 @@ class EmbeddedControlPlaneServer(
             """.trimIndent()
         )
 
-        val libSearchPath = dbEngine.getLibSearchPath()
-        val globalNodeModules = dbEngine.getNodeGlobalModulesPath()
         val localNodeModules = File(appRoot, "node_modules").absolutePath
-
         val args = listOf(
             muslLinker.absolutePath,
             "--library-path",
             libSearchPath,
             nodeBin.absolutePath,
+            "--dns-result-order=ipv4first",
             "--require",
             preloadFile.absolutePath,
             entryScript.absolutePath
         )
 
         val pb = ProcessBuilder(args)
-            .directory(appRoot)
+            .directory(entryScript.parentFile ?: appRoot)
             .redirectErrorStream(true)
 
         val env = pb.environment()
-        // Cargar variables del archivo .env del proyecto si existe
-        val dotEnvFile = File(appRoot, ".env")
-        if (dotEnvFile.exists() && dotEnvFile.isFile) {
-            runCatching {
-                dotEnvFile.readLines().forEach { rawLine ->
-                    val trimmed = rawLine.trim()
-                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
-                        val k = trimmed.substringBefore("=").trim()
-                        val v = trimmed.substringAfter("=").trim().trim('"', '\'')
-                        if (k.isNotEmpty()) env[k] = v
+        // Cargar variables del archivo .env si existe en appRoot o junto al script
+        for (candidateEnv in listOf(File(appRoot, ".env"), File(entryScript.parentFile ?: appRoot, ".env"))) {
+            if (candidateEnv.exists() && candidateEnv.isFile) {
+                runCatching {
+                    candidateEnv.readLines().forEach { rawLine ->
+                        val trimmed = rawLine.trim()
+                        if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                            val k = trimmed.substringBefore("=").trim()
+                            val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                            if (k.isNotEmpty()) env[k] = v
+                        }
                     }
                 }
             }
@@ -267,13 +334,14 @@ class EmbeddedControlPlaneServer(
 
         env["PORT"] = internalNodePort.toString()
         env["CPS_INTERNAL_PORT"] = internalNodePort.toString()
+        env["CPS_GLOBAL_NODE_MODULES"] = globalNodeModules
         env["HOST"] = "127.0.0.1"
         env["NODE_ENV"] = "production"
         env["NODE_PATH"] = "$localNodeModules:$globalNodeModules"
         env["LD_LIBRARY_PATH"] = libSearchPath
         env["HOME"] = appRoot.absolutePath
         env["TMPDIR"] = context.cacheDir.absolutePath
-        // Variables estándar de conexión a la base de datos MariaDB local si no estaban definidas
+
         if (env["DB_HOST"].isNullOrBlank() || env["DB_HOST"] == "localhost") env["DB_HOST"] = "127.0.0.1"
         if (env["DB_PORT"].isNullOrBlank()) env["DB_PORT"] = "3306"
         if (env["DB_USER"].isNullOrBlank()) env["DB_USER"] = dbEngine.getDbUser()
@@ -282,20 +350,85 @@ class EmbeddedControlPlaneServer(
         if (env["DB_NAME"].isNullOrBlank()) env["DB_NAME"] = EmbeddedDatabaseEngine.DEFAULT_DB_NAME
 
         appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+        val logBuffer = ArrayDeque<String>(30)
         val proc = pb.start()
         appProcesses[appName] = proc
-        Log.i(TAG, "Proceso Node.js iniciado para '$appName' (${entryScript.name}) en puerto interno $internalNodePort")
+        Log.i(TAG, "Proceso Node.js iniciado para '$appName' (${entryScript.absolutePath}) en puerto interno $internalNodePort")
 
         thread(name = "CPS-NodeLog-$appName", isDaemon = true) {
             runCatching {
                 proc.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
-                        appNodeLogs[appName] = line
+                        if (line.isNotBlank()) {
+                            synchronized(logBuffer) {
+                                if (logBuffer.size >= 25) logBuffer.removeFirst()
+                                logBuffer.addLast(line)
+                                appNodeLogs[appName] = logBuffer.joinToString("\n")
+                            }
+                        }
                         Log.i(TAG, "[Node:$appName] $line")
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Crea enlaces simbólicos de `node_modules` tanto en los directorios padre (`filesDir`, `deployed_apps`)
+     * como en `appRoot/node_modules` para que tanto CommonJS (`require`) como ES Modules (`import`)
+     * encuentren todos los paquetes preinstalados (`express`, `mysql2`, `cors`, `dotenv`, etc.).
+     */
+    private fun ensureNodeModulesLinked(appRoot: File, globalNodeModulesPath: String) {
+        val globalDir = File(globalNodeModulesPath)
+        if (!globalDir.exists()) return
+
+        for (parentDir in listOf(context.filesDir, deployedAppsBaseDir)) {
+            val link = File(parentDir, "node_modules")
+            runCatching {
+                if (!link.exists()) {
+                    Os.symlink(globalDir.absolutePath, link.absolutePath)
+                }
+            }
+        }
+
+        val appNodeModules = File(appRoot, "node_modules")
+        if (!appNodeModules.exists()) {
+            runCatching {
+                Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
+            }
+        } else if (appNodeModules.isDirectory) {
+            val globalPkgs = globalDir.listFiles() ?: emptyArray()
+            for (pkg in globalPkgs) {
+                val targetPkg = File(appNodeModules, pkg.name)
+                if (!targetPkg.exists()) {
+                    runCatching {
+                        Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun ensureAppNodeServerReady(appName: String, appPort: Int): Boolean {
+        val internalNodePort = appPort + 10000
+        if (isLocalPortOpen(internalNodePort, 150)) return true
+
+        val baseDir = File(deployedAppsBaseDir, appName)
+        if (!baseDir.exists()) return false
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        if (findNodeEntryScript(appRoot) == null) return false
+
+        val proc = appProcesses[appName]
+        if (proc == null || !proc.isAlive) {
+            runCatching { startAppNodeProcessIfPresent(appName, appPort) }
+        }
+
+        repeat(20) {
+            if (isLocalPortOpen(internalNodePort, 150)) return true
+            if (appProcesses[appName]?.isAlive == false) return false
+            Thread.sleep(150)
+        }
+        return isLocalPortOpen(internalNodePort, 150)
     }
 
     private fun findNodeEntryScript(appRoot: File): File? {
@@ -304,8 +437,10 @@ class EmbeddedControlPlaneServer(
             runCatching {
                 val pkg = JSONObject(pkgFile.readText(Charsets.UTF_8))
                 val startCmd = pkg.optJSONObject("scripts")?.optString("start", "") ?: ""
-                if (startCmd.contains(".js")) {
-                    val scriptToken = startCmd.split(" ").firstOrNull { it.endsWith(".js") || it.endsWith(".mjs") || it.endsWith(".cjs") }
+                if (startCmd.contains(".js") || startCmd.contains(".mjs") || startCmd.contains(".cjs")) {
+                    val scriptToken = startCmd.split(" ").firstOrNull {
+                        it.endsWith(".js") || it.endsWith(".mjs") || it.endsWith(".cjs")
+                    }
                     if (!scriptToken.isNullOrBlank()) {
                         val f = File(appRoot, scriptToken.removePrefix("./"))
                         if (f.exists() && f.isFile) return f
@@ -331,7 +466,14 @@ class EmbeddedControlPlaneServer(
                 return f
             }
         }
-        return null
+
+        return appRoot.walkTopDown()
+            .maxDepth(3)
+            .onEnter { it.name != "node_modules" && !it.name.startsWith(".") && it.name != "__MACOSX" }
+            .firstOrNull {
+                it.isFile && it.name in listOf("server.js", "index.js", "app.js", "main.js") &&
+                    !File(it.parentFile, "index.html").exists()
+            }
     }
 
     private fun resolveEffectiveAppRoot(baseDir: File): File {
@@ -342,6 +484,13 @@ class EmbeddedControlPlaneServer(
         val children = baseDir.listFiles()?.filter { !it.name.startsWith(".") && it.name != "__MACOSX" } ?: emptyList()
         if (children.size == 1 && children[0].isDirectory) {
             return resolveEffectiveAppRoot(children[0])
+        }
+        val pkg = baseDir.walkTopDown()
+            .maxDepth(3)
+            .onEnter { it.name != "node_modules" && !it.name.startsWith(".") && it.name != "__MACOSX" }
+            .firstOrNull { it.isFile && (it.name == "package.json" || it.name == "server.js" || it.name == "index.js") }
+        if (pkg?.parentFile != null) {
+            return pkg.parentFile!!
         }
         return baseDir
     }
@@ -393,7 +542,7 @@ class EmbeddedControlPlaneServer(
             } else ByteArray(0)
 
             val internalNodePort = appPort + 10000
-            if (isLocalPortOpen(internalNodePort, 200)) {
+            if (ensureAppNodeServerReady(appName, appPort)) {
                 val proxied = proxyToLocalNodeServer(internalNodePort, method, fullUri, rawPath, headerLines, bodyBytes, appName, appPort, out)
                 if (proxied) {
                     runCatching { out.flush() }
@@ -441,7 +590,8 @@ class EmbeddedControlPlaneServer(
         bodyBytes: ByteArray,
         appName: String,
         appPort: Int,
-        clientOut: OutputStream
+        clientOut: OutputStream,
+        allowPrefixRetry: Boolean = true
     ): Boolean {
         return try {
             Socket().use { backend ->
@@ -467,11 +617,27 @@ class EmbeddedControlPlaneServer(
                 bOut.flush()
 
                 val statusLine = readHeaderLine(bIn) ?: return false
-                // Si el usuario consulta /api/status o /status y el backend Node devuelve 404 porque no definió esa ruta de prueba,
-                // respondemos con el JSON de estado saludable de la API
-                if (statusLine.contains(" 404 ") && (rawPath == "/api/status" || rawPath == "/status" || rawPath == "/health" || rawPath == "/api/health")) {
-                    sendAppStatusJson(appName, appPort, clientOut)
-                    return true
+                if (statusLine.contains(" 404 ") && allowPrefixRetry) {
+                    val altUri = if (fullUri.startsWith("/api/")) {
+                        fullUri.removePrefix("/api").ifEmpty { "/" }
+                    } else if (fullUri == "/api") {
+                        "/"
+                    } else {
+                        "/api$fullUri"
+                    }
+                    val altRawPath = altUri.substringBefore("?")
+                    val retried = proxyToLocalNodeServer(
+                        internalNodePort, method, altUri, altRawPath, headerLines, bodyBytes, appName, appPort, clientOut, allowPrefixRetry = false
+                    )
+                    if (retried) return true
+                }
+
+                if (statusLine.contains(" 404 ") && !allowPrefixRetry) {
+                    if (rawPath == "/api/status" || rawPath == "/status" || rawPath == "/health" || rawPath == "/api/health") {
+                        sendAppStatusJson(appName, appPort, clientOut)
+                        return true
+                    }
+                    return false
                 }
 
                 val respHeaders = mutableListOf<String>()
@@ -635,7 +801,7 @@ class EmbeddedControlPlaneServer(
                     readFixedBytes(input, contentLength.coerceAtMost(10L * 1024L * 1024L).toInt())
                 } else ByteArray(0)
 
-                if (isLocalPortOpen(internalNodePort, 200)) {
+                if (ensureAppNodeServerReady(appName, appPort)) {
                     val proxied = proxyToLocalNodeServer(internalNodePort, method, fullUri, rawPath, headerLines, bodyBytes, appName, appPort, out)
                     if (proxied) {
                         runCatching { out.flush() }

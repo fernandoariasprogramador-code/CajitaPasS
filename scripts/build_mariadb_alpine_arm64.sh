@@ -63,7 +63,18 @@ cp -f "$STAGE_DIR/libs_map.txt" "$ASSETS_DIR/mariadb_libs_map.txt"
 
 # 4. Pre-instalar paquetes esenciales de Node.js para que APIs subidas sin node_modules funcionen directo
 npm install --prefix "$STAGE_DIR/node_global" --no-audit --no-fund --silent \
-  express cors mysql2 mysql dotenv body-parser jsonwebtoken bcryptjs uuid
+  express cors mysql2 mysql dotenv body-parser cookie-parser morgan helmet jsonwebtoken bcryptjs uuid axios multer express-validator
+
+# Crear alias de 'bcrypt' apuntando a 'bcryptjs' (puro JS) para evitar fallos de binarios Windows .node en ARM64
+MODS_DIR="$STAGE_DIR/node_global/node_modules"
+[ -d "$STAGE_DIR/node_global/lib/node_modules" ] && MODS_DIR="$STAGE_DIR/node_global/lib/node_modules"
+mkdir -p "$MODS_DIR/bcrypt"
+cat <<'BCRYPT_EOF' > "$MODS_DIR/bcrypt/package.json"
+{"name":"bcrypt","version":"5.1.1","main":"index.js"}
+BCRYPT_EOF
+cat <<'BCRYPT_EOF' > "$MODS_DIR/bcrypt/index.js"
+module.exports = require('bcryptjs');
+BCRYPT_EOF
 
 # 5. Copiar archivos de mensajes (errmsg.sys) y charsets de MariaDB
 cp -r /usr/share/mariadb/charsets "$STAGE_DIR/share/"
