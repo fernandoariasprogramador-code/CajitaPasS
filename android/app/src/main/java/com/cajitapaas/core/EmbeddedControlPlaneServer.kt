@@ -247,6 +247,26 @@ class EmbeddedControlPlaneServer(
             });
 
             const globalModPath = process.env.CPS_GLOBAL_NODE_MODULES || '';
+
+            if (globalModPath) {
+              if (Array.isArray(Module.globalPaths) && !Module.globalPaths.includes(globalModPath)) {
+                Module.globalPaths.push(globalModPath);
+              }
+              const parentGlobal = path.dirname(globalModPath);
+              if (Array.isArray(Module.globalPaths) && !Module.globalPaths.includes(parentGlobal)) {
+                Module.globalPaths.push(parentGlobal);
+              }
+            }
+
+            const origNodeModulePaths = Module._nodeModulePaths;
+            Module._nodeModulePaths = function(from) {
+              const paths = origNodeModulePaths.call(this, from) || [];
+              if (globalModPath && !paths.includes(globalModPath)) {
+                paths.push(globalModPath);
+              }
+              return paths;
+            };
+
             const origResolveLookupPaths = Module._resolveLookupPaths;
             Module._resolveLookupPaths = function(request, parent) {
               const paths = origResolveLookupPaths.call(this, request, parent) || [];
@@ -262,9 +282,27 @@ class EmbeddedControlPlaneServer(
                 return origResolveFilename.call(this, request, parent, isMain, options);
               } catch (err) {
                 if (globalModPath && !request.startsWith('.') && !request.startsWith('/')) {
-                  const candidate = path.join(globalModPath, request);
-                  if (fs.existsSync(candidate)) {
-                    return origResolveFilename.call(this, candidate, parent, isMain, options);
+                  const candidateDir = path.join(globalModPath, request);
+                  if (fs.existsSync(candidateDir)) {
+                    const candidatePkg = path.join(candidateDir, 'package.json');
+                    if (fs.existsSync(candidatePkg)) {
+                      try {
+                        const pkg = JSON.parse(fs.readFileSync(candidatePkg, 'utf8'));
+                        const mainFile = pkg.main || 'index.js';
+                        const resolvedMain = path.resolve(candidateDir, mainFile);
+                        if (fs.existsSync(resolvedMain)) {
+                          return resolvedMain;
+                        }
+                      } catch (_pe) {}
+                    }
+                    const candidateIndex = path.join(candidateDir, 'index.js');
+                    if (fs.existsSync(candidateIndex)) {
+                      return candidateIndex;
+                    }
+                  }
+                  const candidateJs = candidateDir + '.js';
+                  if (fs.existsSync(candidateJs)) {
+                    return candidateJs;
                   }
                 }
                 throw err;
@@ -434,16 +472,23 @@ class EmbeddedControlPlaneServer(
             } else if (!appNodeModules.exists()) {
                 Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
             } else if (appNodeModules.isDirectory) {
-                val globalPkgs = globalDir.listFiles() ?: emptyArray()
-                for (pkg in globalPkgs) {
-                    val targetPkg = File(appNodeModules, pkg.name)
-                    if (java.nio.file.Files.isSymbolicLink(targetPkg.toPath())) {
-                        if (!targetPkg.exists()) {
-                            java.nio.file.Files.deleteIfExists(targetPkg.toPath())
+                val localExpress = File(appNodeModules, "express")
+                val localMariadb = File(appNodeModules, "mariadb")
+                if (!localExpress.exists() && !localMariadb.exists()) {
+                    appNodeModules.deleteRecursively()
+                    Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
+                } else {
+                    val globalPkgs = globalDir.listFiles() ?: emptyArray()
+                    for (pkg in globalPkgs) {
+                        val targetPkg = File(appNodeModules, pkg.name)
+                        if (java.nio.file.Files.isSymbolicLink(targetPkg.toPath())) {
+                            if (!targetPkg.exists()) {
+                                java.nio.file.Files.deleteIfExists(targetPkg.toPath())
+                                Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
+                            }
+                        } else if (!targetPkg.exists()) {
                             Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
                         }
-                    } else if (!targetPkg.exists()) {
-                        Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
                     }
                 }
             }

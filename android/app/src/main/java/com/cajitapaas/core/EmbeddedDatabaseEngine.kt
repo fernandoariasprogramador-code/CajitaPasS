@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 import kotlin.concurrent.thread
 
@@ -43,7 +44,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         const val DEFAULT_DB_PASS = "cajitapaas2026"
         const val DEFAULT_DB_NAME = "cajitapaas"
         private const val BUNDLE_ASSET_NAME = "mariadb_alpine_bundle.zip"
-        private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v5_ready"
+        private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v6_ready"
     }
 
     private val prefs by lazy {
@@ -174,8 +175,11 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         val marker = File(mariadbRootDir, BUNDLE_VERSION_MARKER)
         val mysqlSystemDir = File(dataDir, "mysql")
         val errmsgFile = File(shareDir, "english/errmsg.sys")
+        val nodeGlobalDir = File(mariadbRootDir, "node_global/node_modules")
+        val expressCheck = File(nodeGlobalDir, "express")
+        val mariadbCheck = File(nodeGlobalDir, "mariadb")
 
-        if (marker.exists() && mysqlSystemDir.exists() && errmsgFile.exists()) {
+        if (marker.exists() && mysqlSystemDir.exists() && errmsgFile.exists() && expressCheck.exists() && mariadbCheck.exists()) {
             tmpDir.mkdirs()
             ensureLibrarySymlinks()
             writeMyCnfConfiguration()
@@ -196,41 +200,50 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         shareDir.mkdirs()
         tmpDir.mkdirs()
 
-        context.assets.open(BUNDLE_ASSET_NAME).use { rawStream ->
-            ZipInputStream(BufferedInputStream(rawStream)).use { zis ->
-                val buffer = ByteArray(16 * 1024)
-                while (true) {
-                    val entry = zis.nextEntry ?: break
+        // Descomprimir bundle desde assets usando ZipFile temporal (nativo C++, sin truncamiento y ultra rápido)
+        val tempZip = File(context.cacheDir, "mariadb_bundle_${System.currentTimeMillis()}.zip")
+        try {
+            context.assets.open(BUNDLE_ASSET_NAME).use { input ->
+                FileOutputStream(tempZip).use { output ->
+                    input.copyTo(output, bufferSize = 64 * 1024)
+                }
+            }
+            ZipFile(tempZip).use { zf ->
+                val buffer = ByteArray(32 * 1024)
+                val entries = zf.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
                     val cleanName = entry.name.replace('\\', '/').trimStart('/')
                     if (cleanName.isEmpty() || (preserveExistingData && cleanName.startsWith("data/"))) {
-                        zis.closeEntry()
                         continue
                     }
                     val outFile = File(mariadbRootDir, cleanName)
                     if (!outFile.canonicalPath.startsWith(mariadbRootDir.canonicalPath)) {
-                        zis.closeEntry()
                         continue
                     }
                     if (entry.isDirectory) {
                         outFile.mkdirs()
                     } else {
                         outFile.parentFile?.mkdirs()
-                        FileOutputStream(outFile).use { fos ->
-                            while (true) {
-                                val len = zis.read(buffer)
-                                if (len <= 0) break
-                                fos.write(buffer, 0, len)
+                        zf.getInputStream(entry).use { inStream ->
+                            FileOutputStream(outFile).use { fos ->
+                                while (true) {
+                                    val len = inStream.read(buffer)
+                                    if (len <= 0) break
+                                    fos.write(buffer, 0, len)
+                                }
                             }
                         }
                     }
-                    zis.closeEntry()
                 }
             }
+        } finally {
+            runCatching { tempZip.delete() }
         }
 
         ensureLibrarySymlinks()
         writeMyCnfConfiguration()
-        marker.writeText("alpine-mariadb-arm64-v2-ready")
+        marker.writeText("alpine-mariadb-arm64-v6-ready")
         Log.i(TAG, "Entorno MariaDB Alpine + Node.js extraído con éxito en ${mariadbRootDir.absolutePath}")
     }
 
