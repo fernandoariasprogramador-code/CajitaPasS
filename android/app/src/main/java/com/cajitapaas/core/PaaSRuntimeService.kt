@@ -298,60 +298,9 @@ class PaaSRuntimeService : Service() {
 
     private suspend fun bootPaaSEngine() = withContext(Dispatchers.IO) {
         val tier = RootDetector.detectOptimalTier()
-        Log.i(TAG, "Arquitectura detectada: $tier")
-        updateNotification("Modo activo: $tier")
-
-        val runtimeDir = File(filesDir, "runtime").apply { mkdirs() }
-        val nativeLibDir = applicationInfo.nativeLibraryDir // Ejecución permitida sin W^X violation en Android 10+
-
-        // Asegurar permisos de ejecución en scripts desempaquetados
-        val bootScript = when (tier) {
-            RuntimeTier.ROOT_NATIVE_CONTAINERS -> File(runtimeDir, "scripts/boot_root_native.sh")
-            RuntimeTier.NON_ROOT_PROOT_PM2 -> File(runtimeDir, "scripts/boot_nonroot_proot.sh")
-        }
-        if (bootScript.exists()) {
-            Os.chmod(bootScript.absolutePath, 493) // 0755 octal
-        }
-
-        val command = when (tier) {
-            RuntimeTier.ROOT_NATIVE_CONTAINERS -> listOf(
-                "su", "-c",
-                "sh ${bootScript.absolutePath} ${runtimeDir.absolutePath} $nativeLibDir"
-            )
-            RuntimeTier.NON_ROOT_PROOT_PM2 -> listOf(
-                "/system/bin/sh",
-                bootScript.absolutePath,
-                runtimeDir.absolutePath,
-                nativeLibDir
-            )
-        }
-
-        try {
-            val pb = ProcessBuilder(command)
-                .directory(runtimeDir)
-                .redirectErrorStream(true)
-
-            val env = pb.environment()
-            env["HOME"] = runtimeDir.absolutePath
-            env["TMPDIR"] = File(cacheDir, "paas_tmp").apply { mkdirs() }.absolutePath
-            env["NATIVE_LIB_DIR"] = nativeLibDir
-            env["PAAS_RUNTIME_DIR"] = runtimeDir.absolutePath
-            env["LD_LIBRARY_PATH"] = "$nativeLibDir:${runtimeDir.absolutePath}/usr/lib"
-
-            runtimeProcess = pb.start()
-
-            runtimeProcess?.inputStream?.bufferedReader()?.useLines { lines ->
-                lines.forEach { line ->
-                    Log.d(TAG, "[Runtime] $line")
-                }
-            }
-
-            val exitCode = runtimeProcess?.waitFor() ?: -1
-            Log.w(TAG, "El proceso principal terminó con código: $exitCode")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error crítico ejecutando el motor PaaS", e)
-            updateNotification("Error en motor: ${e.message}")
-        }
+        Log.i(TAG, "Arquitectura detectada: $tier (Motor MariaDB Alpine ARM64 activo)")
+        embeddedServer?.start()
+        ensureTunnelRunning()
     }
 
     private fun createNotificationChannel() {

@@ -109,7 +109,7 @@ class EmbeddedControlPlaneServer(
 
     fun stop() {
         isRunning = false
-        dbEngine.stopBridge()
+        dbEngine.shutdownEngine()
         runCatching { serverSocket?.close() }
         runCatching { gatewaySocket?.close() }
         for ((_, sock) in appServerSockets) {
@@ -751,6 +751,10 @@ class EmbeddedControlPlaneServer(
                 .putString("db_custom_pass", pass)
                 .apply()
 
+            executor.execute {
+                runCatching { dbEngine.syncAdminUserCredentials() }
+            }
+
             return sendJson(out, 201, JSONObject().put("token", token).toString())
         }
 
@@ -774,7 +778,8 @@ class EmbeddedControlPlaneServer(
                 JSONObject()
                     .put("system", "CPS (CajitaPaaS Android APK)")
                     .put("status", "online")
-                    .put("mariadbConnected", true)
+                    .put("mariadbConnected", dbEngine.isDaemonHealthy())
+                    .put("dbEngine", "MariaDB Alpine ARM64 (InnoDB)")
                     .put("lanIp", lanIp)
                     .put("lanPort", port)
                     .put("lanUrl", "http://$lanIp:$port")
@@ -1129,6 +1134,8 @@ class EmbeddedControlPlaneServer(
         return JSONObject()
             .put("enabled", dbEngine.isBridgeEnabled)
             .put("mode", dbEngine.bridgeMode)
+            .put("engine", "MariaDB Alpine ARM64 (InnoDB)")
+            .put("daemonHealthy", dbEngine.isDaemonHealthy())
             .put("host", getDeviceLanIp())
             .put("port", EmbeddedDatabaseEngine.STANDARD_PORT)
             .put("altPort", EmbeddedDatabaseEngine.BRIDGE_PORT)

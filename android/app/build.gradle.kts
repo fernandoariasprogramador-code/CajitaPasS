@@ -22,11 +22,12 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            keepDebugSymbols += listOf("**/*.so")
         }
     }
 
     androidResources {
-        noCompress += listOf("xz", "tar", "zst")
+        noCompress += listOf("xz", "tar", "zst", "zip")
     }
 
     compileOptions {
