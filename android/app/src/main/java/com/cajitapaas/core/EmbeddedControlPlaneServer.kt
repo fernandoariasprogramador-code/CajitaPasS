@@ -336,6 +336,9 @@ class EmbeddedControlPlaneServer(
                   if (!copy.password && process.env.DB_PASSWORD) {
                     copy.password = process.env.DB_PASSWORD;
                   }
+                  if (!copy.database && process.env.DB_NAME) {
+                    copy.database = process.env.DB_NAME;
+                  }
                   return copy;
                 };
                 if (typeof mod.createPool === 'function' && !mod.__cpsPatched) {
@@ -409,12 +412,31 @@ class EmbeddedControlPlaneServer(
         env["HOME"] = appRoot.absolutePath
         env["TMPDIR"] = context.cacheDir.absolutePath
 
+        val projects = loadSavedProjects()
+        val appConfig = projects.optJSONObject(appName)
+        val projectDb = appConfig?.optString("dbName")?.takeIf { it.isNotBlank() }
+            ?: appConfig?.optString("database")?.takeIf { it.isNotBlank() }
+
+        // Si el usuario especificó una BD en su .env, respetarla siempre con máxima prioridad
+        val envDb = env["DB_NAME"]?.takeIf { it.isNotBlank() }
+            ?: env["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: env["DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: env["MYSQL_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: env["DATABASE_NAME"]?.takeIf { it.isNotBlank() }
+
+        val effectiveDb = envDb ?: projectDb ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+
         if (env["DB_HOST"].isNullOrBlank() || env["DB_HOST"] == "localhost") env["DB_HOST"] = "127.0.0.1"
         if (env["DB_PORT"].isNullOrBlank()) env["DB_PORT"] = "3306"
         if (env["DB_USER"].isNullOrBlank()) env["DB_USER"] = dbEngine.getDbUser()
         if (env["DB_PASS"].isNullOrBlank()) env["DB_PASS"] = dbEngine.getDbPassword()
         if (env["DB_PASSWORD"].isNullOrBlank()) env["DB_PASSWORD"] = dbEngine.getDbPassword()
-        if (env["DB_NAME"].isNullOrBlank()) env["DB_NAME"] = EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+
+        env["DB_NAME"] = effectiveDb
+        env["DB_DATABASE"] = effectiveDb
+        env["DATABASE"] = effectiveDb
+        env["MYSQL_DATABASE"] = effectiveDb
+        env["DATABASE_NAME"] = effectiveDb
 
         appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
         val logBuffer = ArrayDeque<String>(30)
@@ -1610,20 +1632,49 @@ class EmbeddedControlPlaneServer(
             )
         }
 
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/database") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/database").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val newDb = json.optString("database", json.optString("dbName", "")).trim()
+            val projectsObj = loadSavedProjects()
+            val appInfo = projectsObj.optJSONObject(appName)
+            if (appInfo != null && newDb.isNotEmpty()) {
+                appInfo.put("dbName", newDb)
+                projectsObj.put(appName, appInfo)
+                saveProjects(projectsObj)
+                val port = appInfo.optInt("activePort", 3001)
+                startDedicatedAppServer(appName, port)
+                return sendJson(
+                    out,
+                    200,
+                    JSONObject()
+                        .put("status", "success")
+                        .put("message", "Base de datos de '$appName' cambiada a '$newDb'")
+                        .put("dbName", newDb)
+                        .toString()
+                )
+            }
+            return sendJson(out, 400, JSONObject().put("error", "No se encontró el servicio o nombre de base inválido").toString())
+        }
+
         if ((path == "/api/deploy/zip" || path == "/api/v1/deploy/zip" || path == "/api/v1/deploy/git") && method == "POST") {
             val appName: String
             val appRole: String
             val routePath: String
+            val dbName: String
 
             if (path.endsWith("/git")) {
                 val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
                 appName = sanitizeSlug(json.optString("appName", queryParams["appName"] ?: "mi-app"))
                 appRole = json.optString("appRole", queryParams["appRole"] ?: "backend")
                 routePath = json.optString("routePath", queryParams["routePath"] ?: if (appRole == "frontend") "/" else "/api/*")
+                dbName = json.optString("dbName", json.optString("database", queryParams["dbName"] ?: "")).trim()
             } else {
                 appName = sanitizeSlug(queryParams["appName"] ?: extractMultipartField(body, "appName") ?: "mi-app")
                 appRole = queryParams["appRole"] ?: extractMultipartField(body, "appRole") ?: "frontend"
                 routePath = queryParams["routePath"] ?: extractMultipartField(body, "routePath") ?: "/"
+                dbName = (queryParams["dbName"] ?: queryParams["database"] ?: extractMultipartField(body, "dbName") ?: extractMultipartField(body, "database") ?: "").trim()
             }
 
             val projectsObj = loadSavedProjects()
@@ -1692,6 +1743,11 @@ class EmbeddedControlPlaneServer(
                 .put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT$cleanRoute")
                 .put("pid", 4200 + (projectsObj.length() * 17))
                 .put("memoryMb", if (appRole == "frontend") 38 else 54)
+
+            val effectiveAppDb = if (dbName.isNotEmpty()) dbName else (existing?.optString("dbName") ?: "")
+            if (effectiveAppDb.isNotEmpty()) {
+                slotInfo.put("dbName", effectiveAppDb)
+            }
 
             projectsObj.put(appName, slotInfo)
             saveProjects(projectsObj)

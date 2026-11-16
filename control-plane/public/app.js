@@ -51,6 +51,7 @@ const btnRefreshAll = document.getElementById('btnRefreshAll');
 const zipAppName = document.getElementById('zipAppName');
 const zipAppRole = document.getElementById('zipAppRole');
 const zipRoutePath = document.getElementById('zipRoutePath');
+const zipDbName = document.getElementById('zipDbName');
 const zipFileInput = document.getElementById('zipFileInput');
 const zipDropzone = document.getElementById('zipDropzone');
 const zipChosenText = document.getElementById('zipChosenText');
@@ -59,6 +60,7 @@ const btnDeployZip = document.getElementById('btnDeployZip');
 const gitAppName = document.getElementById('gitAppName');
 const gitAppRole = document.getElementById('gitAppRole');
 const gitRoutePath = document.getElementById('gitRoutePath');
+const gitDbName = document.getElementById('gitDbName');
 const gitRepoUrl = document.getElementById('gitRepoUrl');
 const gitBranch = document.getElementById('gitBranch');
 const btnDeployGit = document.getElementById('btnDeployGit');
@@ -450,6 +452,7 @@ btnDeployZip.addEventListener('click', async () => {
   const appName = formatSlug(zipAppName.value);
   const appRole = zipAppRole ? zipAppRole.value : 'frontend';
   const routePath = zipRoutePath ? zipRoutePath.value.trim() || '/' : '/';
+  const dbName = zipDbName ? zipDbName.value.trim() : '';
   zipAppName.value = appName;
 
   const formData = new FormData();
@@ -457,11 +460,12 @@ btnDeployZip.addEventListener('click', async () => {
   formData.append('appRole', appRole);
   formData.append('routePath', routePath);
   formData.append('healthPath', '/health');
+  if (dbName) formData.append('dbName', dbName);
   formData.append('artifact', file);
 
   const deployQuery = `?appName=${encodeURIComponent(appName)}&appRole=${encodeURIComponent(
     appRole
-  )}&routePath=${encodeURIComponent(routePath)}`;
+  )}&routePath=${encodeURIComponent(routePath)}${dbName ? `&dbName=${encodeURIComponent(dbName)}` : ''}`;
 
   await runProtectedUpdate({
     label: `Instalando ${file.name} en "${appName}" (${appRole} -> ${routePath})...`,
@@ -490,6 +494,7 @@ btnDeployGit.addEventListener('click', async () => {
   const routePath = gitRoutePath ? gitRoutePath.value.trim() || '/api/*' : '/api/*';
   const repoUrl = gitRepoUrl.value.trim();
   const branch = gitBranch.value.trim() || 'main';
+  const dbName = gitDbName ? gitDbName.value.trim() : '';
 
   if (!repoUrl) {
     showResultModal({
@@ -516,7 +521,7 @@ btnDeployGit.addEventListener('click', async () => {
           ...authHeaders(),
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ appName, appRole, routePath, repoUrl, branch, healthPath: '/health' })
+        body: JSON.stringify({ appName, appRole, routePath, repoUrl, branch, healthPath: '/health', dbName })
       })
   });
 });
@@ -734,6 +739,7 @@ async function loadProjects() {
               <span style="opacity:0.8;">${secondaryNote}</span> ·
               Ruta: <strong>${route}</strong> ·
               Slot <strong>${slotColor}</strong>
+              ${role !== 'frontend' ? ` · BD: <strong style="color:var(--accent-mint); font-family:monospace;">${slotInfo.dbName || slotInfo.database || 'cajitapaas'}</strong>` : ''}
             </div>
           </div>
         </div>
@@ -747,12 +753,24 @@ async function loadProjects() {
           >
             ${btnOpenLabel}
           </a>
+          ${role !== 'frontend' ? `
+          <button
+            type="button"
+            class="btn btn-small btn-change-db"
+            data-app="${baseAppName}"
+            data-db="${slotInfo.dbName || slotInfo.database || 'cajitapaas'}"
+            style="background:rgba(0, 229, 163, 0.15); border: 1px solid rgba(0, 229, 163, 0.4); color: var(--accent-mint);"
+          >
+            🗄️ Cambiar BD
+          </button>
+          ` : ''}
           <button
             type="button"
             class="btn btn-secondary btn-small btn-select-app"
             data-app="${baseAppName}"
             data-role="${role}"
             data-route="${route}"
+            data-db="${slotInfo.dbName || slotInfo.database || ''}"
           >
             ✏️ Seleccionar para Actualizar
           </button>
@@ -764,17 +782,45 @@ async function loadProjects() {
       appsListContainer.appendChild(item);
     }
 
+    appsListContainer.querySelectorAll('.btn-change-db').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const app = btn.dataset.app;
+        const currentDb = btn.dataset.db || 'cajitapaas';
+        const newDb = prompt(`Ingresá el nombre de la base de datos para "${app}":`, currentDb);
+        if (!newDb || newDb.trim() === currentDb) return;
+        try {
+          const res = await fetch(`./api/v1/projects/${encodeURIComponent(app)}/database`, {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ database: newDb.trim() })
+          });
+          const d = await res.json();
+          if (res.ok) {
+            showToast(`Base de datos de "${app}" cambiada a "${newDb.trim()}".`);
+            loadDeployedApps();
+          } else {
+            alert(d.error || 'Error al cambiar la base de datos');
+          }
+        } catch (err) {
+          alert('Error de conexión al cambiar la base de datos');
+        }
+      });
+    });
+
     appsListContainer.querySelectorAll('.btn-select-app').forEach((btn) => {
       btn.addEventListener('click', () => {
         const appName = btn.dataset.app;
         const role = btn.dataset.role;
         const route = btn.dataset.route;
+        const db = btn.dataset.db || '';
         zipAppName.value = appName;
         gitAppName.value = appName;
         if (zipAppRole) zipAppRole.value = role;
         if (gitAppRole) gitAppRole.value = role;
         if (zipRoutePath) zipRoutePath.value = route;
         if (gitRoutePath) gitRoutePath.value = route;
+        if (zipDbName) zipDbName.value = db;
+        if (gitDbName) gitDbName.value = db;
         window.scrollTo({ top: 0, behavior: 'smooth' });
       });
     });

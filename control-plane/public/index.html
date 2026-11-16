@@ -865,6 +865,14 @@
               </div>
             </div>
 
+            <div style="margin-top: 0.75rem;">
+              <label for="zipDbName">4. Base de Datos asociada (Opcional)</label>
+              <input type="text" id="zipDbName" placeholder="ej: app_pruebas, cajitapaas, mi_tienda" />
+              <small style="color: var(--text-muted); font-size: 0.78rem; display: block; margin-top: 0.25rem;">
+                Dejá vacío para usar la de tu archivo <code>.env</code> o la predeterminada <code>cajitapaas</code>.
+              </small>
+            </div>
+
             <input type="file" id="zipFileInput" accept=".zip,application/zip" class="hidden" />
 
             <div id="zipDropzone" class="zip-dropzone" role="button" tabindex="0">
@@ -907,6 +915,9 @@
 
             <label for="gitBranch">Rama (por defecto: main)</label>
             <input type="text" id="gitBranch" value="main" />
+
+            <label for="gitDbName" style="margin-top: 0.75rem;">Base de Datos asociada (Opcional)</label>
+            <input type="text" id="gitDbName" placeholder="ej: app_pruebas, cajitapaas" />
 
             <button id="btnDeployGit" type="button" class="btn" style="margin-top: 1.25rem;">
               🚀 Descargar y Publicar Servicio
