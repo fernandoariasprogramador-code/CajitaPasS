@@ -120,6 +120,22 @@ Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcio
 
 ---
 
+### 3. Desplegar un Proyecto .NET / ASP.NET Core (MVC, Razor, Web API)
+
+CajitaPaaS incluye el runtime oficial **.NET 8 + ASP.NET Core 8 (ARM64 Alpine)** (compatible con `.NET 6`, `.NET 7` y `.NET 8` mediante *roll-forward*).
+
+1. En tu PC, dentro de la carpeta del proyecto (donde está tu archivo `.csproj`), ejecuta:
+   ```bash
+   dotnet publish -c Release -o ./publish
+   ```
+2. Comprime el contenido de la carpeta `./publish` (debe contener `TuApp.dll`, `TuApp.runtimeconfig.json`, `appsettings.json` y `wwwroot/` si corresponde) en un archivo `.zip`.
+3. En el Panel Web de CajitaPaaS, selecciona:
+   - **Sistema Completo (Fullstack)** (si incluye vistas Razor/MVC o `wwwroot/`) con ruta `/`.
+   - O **Backend / API** (si es una Web API REST) con ruta `/api/*`.
+4. **Conexión automática a MariaDB**: CajitaPaaS inyecta automáticamente `ConnectionStrings__DefaultConnection` además de `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` y `DB_NAME` (si usas `Pomelo.EntityFrameworkCore.MySql` o `MySqlConnector`, funcionará directo).
+
+---
+
 ### 🛠️ Herramientas en Caliente desde el Panel Web (Sin Resubir el `.ZIP`)
 
 Cada aplicación Backend encendida cuenta con controles instantáneos en su tarjeta:

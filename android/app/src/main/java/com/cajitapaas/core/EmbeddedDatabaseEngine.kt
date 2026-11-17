@@ -45,6 +45,8 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         const val DEFAULT_DB_NAME = "cajitapaas"
         private const val BUNDLE_ASSET_NAME = "mariadb_alpine_bundle.zip"
         private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v6_ready"
+        private const val DOTNET_BUNDLE_ASSET_NAME = "dotnet_alpine_bundle.zip"
+        private const val DOTNET_VERSION_MARKER = ".alpine_dotnet8_v1_ready"
     }
 
     private val prefs by lazy {
@@ -53,6 +55,10 @@ class EmbeddedDatabaseEngine(private val context: Context) {
 
     private val mariadbRootDir by lazy {
         File(context.filesDir, "mariadb_alpine").apply { mkdirs() }
+    }
+
+    private val dotnetRootDir by lazy {
+        File(context.filesDir, "dotnet_alpine").apply { mkdirs() }
     }
 
     private val dataDir by lazy {
@@ -159,6 +165,103 @@ class EmbeddedDatabaseEngine(private val context: Context) {
      */
     fun getSharedNodeModulesPath(): String {
         return File(context.filesDir, "cps_shared_node_modules/node_modules").apply { mkdirs() }.absolutePath
+    }
+
+    /**
+     * Extrae bajo demanda el runtime de .NET 8 + ASP.NET Core 8 (ARM64 Alpine) y crea los
+     * enlaces simbólicos de sus bibliotecas nativas (`*.so`) hacia `nativeLibraryDir`.
+     */
+    @Synchronized
+    fun ensureDotnetRuntimeExtracted(): String? {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val dotnetBin = File(nativeLibDir, "libdotnet.so")
+        if (!dotnetBin.exists()) {
+            Log.w(TAG, "Binario libdotnet.so no disponible en $nativeLibDir")
+            return null
+        }
+
+        val marker = File(dotnetRootDir, DOTNET_VERSION_MARKER)
+        val sharedDir = File(dotnetRootDir, "shared/Microsoft.AspNetCore.App")
+        val mapFile = File(dotnetRootDir, "dotnet_so_map.txt")
+
+        if (!marker.exists() || !sharedDir.exists() || !mapFile.exists()) {
+            Log.i(TAG, "Extrayendo entorno .NET 8 + ASP.NET Core 8 ARM64...")
+            if (dotnetRootDir.exists()) dotnetRootDir.deleteRecursively()
+            dotnetRootDir.mkdirs()
+
+            val tempZip = File(context.cacheDir, "dotnet_bundle_${System.currentTimeMillis()}.zip")
+            try {
+                context.assets.open(DOTNET_BUNDLE_ASSET_NAME).use { input ->
+                    FileOutputStream(tempZip).use { output ->
+                        input.copyTo(output, bufferSize = 64 * 1024)
+                    }
+                }
+                ZipFile(tempZip).use { zf ->
+                    val buffer = ByteArray(32 * 1024)
+                    val entries = zf.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        val cleanName = entry.name.replace('\\', '/').trimStart('/')
+                        if (cleanName.isEmpty()) continue
+                        val outFile = File(dotnetRootDir, cleanName)
+                        if (!outFile.canonicalPath.startsWith(dotnetRootDir.canonicalPath)) continue
+                        if (entry.isDirectory) {
+                            outFile.mkdirs()
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            zf.getInputStream(entry).use { inStream ->
+                                FileOutputStream(outFile).use { fos ->
+                                    while (true) {
+                                        val len = inStream.read(buffer)
+                                        if (len <= 0) break
+                                        fos.write(buffer, 0, len)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error extrayendo bundle .NET 8: ${e.message}", e)
+                return null
+            } finally {
+                runCatching { tempZip.delete() }
+            }
+            marker.writeText("alpine-dotnet8-arm64-ready")
+        }
+
+        // Enlazar `dotnet_alpine/dotnet` -> `nativeLibraryDir/libdotnet.so`
+        runCatching {
+            val linkBin = File(dotnetRootDir, "dotnet")
+            if (java.nio.file.Files.isSymbolicLink(linkBin.toPath()) || linkBin.exists()) {
+                linkBin.delete()
+            }
+            Os.symlink(dotnetBin.absolutePath, linkBin.absolutePath)
+        }
+
+        // Enlazar todas las librerías nativas .so de host/fxr y shared/* -> nativeLibraryDir/libdotnet_*.so
+        if (mapFile.exists()) {
+            runCatching {
+                mapFile.readLines().forEach { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty() && trimmed.contains("=")) {
+                        val relPath = trimmed.substringBefore("=").trim()
+                        val apkSoName = trimmed.substringAfter("=").trim()
+                        val targetSo = File(nativeLibDir, apkSoName)
+                        val linkFile = File(dotnetRootDir, relPath)
+                        if (targetSo.exists()) {
+                            linkFile.parentFile?.mkdirs()
+                            if (java.nio.file.Files.isSymbolicLink(linkFile.toPath()) || linkFile.exists()) {
+                                linkFile.delete()
+                            }
+                            Os.symlink(targetSo.absolutePath, linkFile.absolutePath)
+                        }
+                    }
+                }
+            }
+        }
+
+        return dotnetRootDir.absolutePath
     }
 
     fun getInnoDbBufferPoolMb(): Int {

@@ -263,7 +263,19 @@ class EmbeddedControlPlaneServer(
         val baseDir = File(deployedAppsBaseDir, appName)
         if (!baseDir.exists()) return
         val appRoot = resolveEffectiveAppRoot(baseDir)
-        val entryScript = findNodeEntryScript(appRoot) ?: return
+        val entryScript = findNodeEntryScript(appRoot)
+        if (entryScript == null) {
+            val dotnetEntry = findDotnetEntryAssembly(appRoot)
+            if (dotnetEntry != null) {
+                startAppDotnetProcessIfPresent(appName, appPort, appRoot, dotnetEntry.first, dotnetEntry.second)
+            } else if (hasUnpublishedDotnetSource(appRoot)) {
+                appendAppLog(
+                    appName,
+                    "[CPS-DotNet] ⚠️ Proyecto .NET detectado (*.csproj) sin compilar. Ejecutá 'dotnet publish -c Release -o ./publish' en tu PC y subí el contenido de la carpeta 'publish/' en el .ZIP."
+                )
+            }
+            return
+        }
 
         val existingProc = appProcesses[appName]
         val internalNodePort = appPort + 10000
@@ -641,19 +653,240 @@ class EmbeddedControlPlaneServer(
         val baseDir = File(deployedAppsBaseDir, appName)
         if (!baseDir.exists()) return false
         val appRoot = resolveEffectiveAppRoot(baseDir)
-        if (findNodeEntryScript(appRoot) == null) return false
+        val isNode = findNodeEntryScript(appRoot) != null
+        val isDotnet = if (!isNode) findDotnetEntryAssembly(appRoot) != null else false
+        if (!isNode && !isDotnet) return false
 
         val proc = appProcesses[appName]
         if (proc == null || !proc.isAlive) {
             runCatching { startAppNodeProcessIfPresent(appName, appPort) }
         }
 
-        repeat(20) {
+        val maxWaitSteps = if (isDotnet) 40 else 20
+        repeat(maxWaitSteps) {
             if (isLocalPortOpen(internalNodePort, 150)) return true
             if (appProcesses[appName]?.isAlive == false) return false
             Thread.sleep(150)
         }
         return isLocalPortOpen(internalNodePort, 150)
+    }
+
+    /**
+     * Busca un ensamblado .NET compilado/publicado (`<AppName>.runtimeconfig.json` + `<AppName>.dll`).
+     * Prioriza carpetas `publish/`, luego `bin/Release/`, luego la raíz, y por último `bin/Debug/`.
+     */
+    private fun findDotnetEntryAssembly(appRoot: File): Pair<File, File>? {
+        if (!appRoot.exists()) return null
+        val configs = appRoot.walkTopDown()
+            .maxDepth(5)
+            .onEnter {
+                val n = it.name.lowercase()
+                n != "node_modules" && n != "__macosx" && n != ".git" && n != "obj" && n != "wwwroot"
+            }
+            .filter { it.isFile && it.name.endsWith(".runtimeconfig.json", ignoreCase = true) }
+            .toList()
+
+        if (configs.isEmpty()) return null
+
+        val ranked = configs.mapNotNull { cfg ->
+            val dir = cfg.parentFile ?: return@mapNotNull null
+            val baseName = cfg.name.removeSuffix(".runtimeconfig.json")
+            val dll = File(dir, "$baseName.dll")
+            if (!dll.exists() || !dll.isFile) return@mapNotNull null
+
+            val pathLower = cfg.absolutePath.lowercase()
+            val score = when {
+                pathLower.contains("/publish/") || pathLower.contains("\\publish\\") -> 100
+                dir.canonicalPath == appRoot.canonicalPath -> 90
+                pathLower.contains("/release/") || pathLower.contains("\\release\\") -> 80
+                pathLower.contains("/debug/") || pathLower.contains("\\debug\\") -> 60
+                else -> 50
+            }
+            Triple(score, dll, dir)
+        }.sortedByDescending { it.first }
+
+        val best = ranked.firstOrNull() ?: return null
+        val contentRoot = if (File(best.third, "wwwroot").exists() || File(best.third, "appsettings.json").exists()) {
+            best.third
+        } else if (File(appRoot, "wwwroot").exists() || File(appRoot, "Views").exists()) {
+            appRoot
+        } else {
+            best.third
+        }
+        return best.second to contentRoot
+    }
+
+    private fun hasUnpublishedDotnetSource(appRoot: File): Boolean {
+        if (!appRoot.exists()) return false
+        return appRoot.walkTopDown()
+            .maxDepth(3)
+            .onEnter { it.name != "node_modules" && !it.name.startsWith(".") && it.name != "__MACOSX" }
+            .any { it.isFile && (it.name.endsWith(".csproj", ignoreCase = true) || it.name.endsWith(".sln", ignoreCase = true)) }
+    }
+
+    /**
+     * Inicia una aplicación .NET / ASP.NET Core usando `libdotnet.so` (ARM64 Alpine)
+     * escuchando en `http://127.0.0.1:<appPort + 10000>`, con límite de RAM, .env, MariaDB y Watchdog.
+     */
+    @Synchronized
+    private fun startAppDotnetProcessIfPresent(
+        appName: String,
+        appPort: Int,
+        appRoot: File,
+        dllFile: File,
+        contentRoot: File
+    ) {
+        val internalPort = appPort + 10000
+        val existingProc = appProcesses[appName]
+        if (existingProc != null && existingProc.isAlive && isLocalPortOpen(internalPort, 150)) {
+            return
+        }
+
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val muslLinker = File(nativeLibDir, "libalpine_musl.so")
+        val dotnetBin = File(nativeLibDir, "libdotnet.so")
+        if (!muslLinker.exists() || !dotnetBin.exists()) {
+            appendAppLog(appName, "[CPS-DotNet] ❌ El runtime .NET 8 (libdotnet.so) no está empaquetado en esta APK.")
+            Log.w(TAG, "Binario libdotnet.so no disponible para iniciar '$appName'")
+            return
+        }
+
+        val dotnetRootPath = dbEngine.ensureDotnetRuntimeExtracted()
+        if (dotnetRootPath == null) {
+            appendAppLog(appName, "[CPS-DotNet] ❌ No se pudo inicializar el entorno .NET 8 ARM64.")
+            return
+        }
+
+        runCatching { Os.chmod(muslLinker.absolutePath, 493) }
+        runCatching { Os.chmod(dotnetBin.absolutePath, 493) }
+
+        val libSearchPath = dbEngine.getLibSearchPath()
+        val projects = loadSavedProjects()
+        val appConfig = projects.optJSONObject(appName)
+        val appMaxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb()).coerceIn(64, 2048)
+        val gcHeapHex = (appMaxRamMb.toLong() * 1024L * 1024L).toString(16)
+
+        val args = listOf(
+            muslLinker.absolutePath,
+            "--library-path",
+            libSearchPath,
+            dotnetBin.absolutePath,
+            "--roll-forward",
+            "Major",
+            dllFile.absolutePath,
+            "--urls",
+            "http://127.0.0.1:$internalPort",
+            "--contentRoot",
+            contentRoot.absolutePath
+        )
+
+        val pb = ProcessBuilder(args)
+            .directory(contentRoot)
+            .redirectErrorStream(true)
+
+        val env = pb.environment()
+        for (candidateEnv in listOf(File(appRoot, ".env"), File(contentRoot, ".env"))) {
+            if (candidateEnv.exists() && candidateEnv.isFile) {
+                runCatching {
+                    candidateEnv.readLines().forEach { rawLine ->
+                        val trimmed = rawLine.trim()
+                        if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                            val k = trimmed.substringBefore("=").trim()
+                            val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                            if (k.isNotEmpty()) env[k] = v
+                        }
+                    }
+                }
+            }
+        }
+
+        val projectDb = appConfig?.optString("dbName")?.takeIf { it.isNotBlank() }
+            ?: appConfig?.optString("database")?.takeIf { it.isNotBlank() }
+        val envDb = env["DB_NAME"]?.takeIf { it.isNotBlank() }
+            ?: env["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: env["DATABASE"]?.takeIf { it.isNotBlank() }
+        val effectiveDb = envDb ?: projectDb ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+        if (effectiveDb != EmbeddedDatabaseEngine.DEFAULT_DB_NAME) {
+            runCatching { dbEngine.createDatabase(effectiveDb, null, null) }
+        }
+
+        val dbUser = dbEngine.getDbUser()
+        val dbPass = dbEngine.getDbPassword()
+
+        env["DOTNET_ROOT"] = dotnetRootPath
+        env["DOTNET_EnableWriteXorExecute"] = "0"
+        env["COMPlus_EnableWriteXorExecute"] = "0"
+        env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+        env["DOTNET_NOLOGO"] = "1"
+        env["DOTNET_GCHeapHardLimit"] = gcHeapHex
+        env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] ?: "1"
+        env["ASPNETCORE_URLS"] = "http://127.0.0.1:$internalPort"
+        env["URLS"] = "http://127.0.0.1:$internalPort"
+        env["PORT"] = internalPort.toString()
+        env["ASPNETCORE_ENVIRONMENT"] = env["ASPNETCORE_ENVIRONMENT"]?.takeIf { it.isNotBlank() } ?: "Production"
+        env["DOTNET_ENVIRONMENT"] = env["ASPNETCORE_ENVIRONMENT"]
+        env["LD_LIBRARY_PATH"] = libSearchPath
+        env["HOME"] = contentRoot.absolutePath
+        env["TMPDIR"] = context.cacheDir.absolutePath
+
+        if (env["DB_HOST"].isNullOrBlank() || env["DB_HOST"] == "localhost") env["DB_HOST"] = "127.0.0.1"
+        if (env["DB_PORT"].isNullOrBlank()) env["DB_PORT"] = "3306"
+        if (env["DB_USER"].isNullOrBlank() || env["DB_USER"] == "root") env["DB_USER"] = dbUser
+        if (env["DB_PASS"].isNullOrBlank()) env["DB_PASS"] = dbPass
+        if (env["DB_PASSWORD"].isNullOrBlank()) env["DB_PASSWORD"] = dbPass
+        env["DB_NAME"] = effectiveDb
+        if (env["ConnectionStrings__DefaultConnection"].isNullOrBlank()) {
+            env["ConnectionStrings__DefaultConnection"] =
+                "Server=127.0.0.1;Port=3306;Database=$effectiveDb;Uid=$dbUser;Pwd=$dbPass;"
+        }
+
+        appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+        val startTimestamp = System.currentTimeMillis()
+        val proc = pb.start()
+        appProcesses[appName] = proc
+        appWatchdogState[appName] = "running"
+        appendAppLog(appName, "[CPS-DotNet] 🚀 Iniciando '${dllFile.name}' (.NET 8 · Puerto :$appPort -> Interno :$internalPort · RAM máx: ${appMaxRamMb}MB · BD: '$effectiveDb')")
+        Log.i(TAG, "Proceso .NET iniciado para '$appName' (${dllFile.absolutePath}) en puerto interno $internalPort")
+
+        thread(name = "CPS-DotnetLog-$appName", isDaemon = true) {
+            runCatching {
+                proc.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        if (line.isNotBlank()) {
+                            appendAppLog(appName, line)
+                        }
+                        Log.i(TAG, "[DotNet:$appName] $line")
+                    }
+                }
+            }
+            val exitCode = runCatching { proc.waitFor() }.getOrDefault(-1)
+            if (isRunning && !intentionallyStoppedApps.contains(appName) && appProcesses[appName] === proc) {
+                val uptimeMs = System.currentTimeMillis() - startTimestamp
+                if (uptimeMs > 60_000L) {
+                    appRestartCounts[appName] = 0
+                }
+                if (isWatchdogEnabled()) {
+                    val crashes = (appRestartCounts[appName] ?: 0) + 1
+                    appRestartCounts[appName] = crashes
+                    val maxRestarts = getWatchdogMaxRestarts()
+                    if (crashes <= maxRestarts) {
+                        val backoffSec = minOf(25, crashes * 3)
+                        appWatchdogState[appName] = "restarting ($crashes/$maxRestarts)"
+                        appendAppLog(appName, "[CPS-Watchdog] ⚠️ Proceso .NET terminado inesperadamente (código $exitCode). Auto-reiniciando en ${backoffSec}s (intento $crashes/$maxRestarts)...")
+                        runCatching { Thread.sleep(backoffSec * 1000L) }
+                        if (isRunning && !intentionallyStoppedApps.contains(appName)) {
+                            runCatching { startAppDotnetProcessIfPresent(appName, appPort, appRoot, dllFile, contentRoot) }
+                        }
+                    } else {
+                        appWatchdogState[appName] = "crash_loop"
+                        appendAppLog(appName, "[CPS-Watchdog] 🛑 Auto-reinicio .NET pausado tras $maxRestarts fallos consecutivos. Revisá la consola.")
+                    }
+                } else {
+                    appWatchdogState[appName] = "exited ($exitCode)"
+                    appendAppLog(appName, "[CPS-DotNet] Proceso finalizado (código $exitCode). Watchdog desactivado.")
+                }
+            }
+        }
     }
 
     private fun findNodeEntryScript(appRoot: File): File? {
@@ -1114,11 +1347,35 @@ class EmbeddedControlPlaneServer(
             }
         }
 
-        // Si aún no existe index.html en la raíz, buscar el primer archivo .html o .json disponible
+        // Si aún no existe index.html en la raíz, buscar el primer archivo .html o .htm (nunca .json de librerías)
         if (!targetFile.exists() && cleanRel == "index.html") {
-            val fallbackHtml = appRootDir.walkTopDown().firstOrNull {
-                it.isFile && it.extension.lowercase() in listOf("html", "htm", "json")
+            val effectiveRoot = resolveEffectiveAppRoot(File(deployedAppsBaseDir, appName))
+            if (findDotnetEntryAssembly(effectiveRoot) == null && hasUnpublishedDotnetSource(effectiveRoot)) {
+                val guideHtml = """
+                    <!DOCTYPE html>
+                    <html lang="es">
+                    <head><meta charset="UTF-8"><title>$appName · Proyecto .NET sin publicar</title></head>
+                    <body style="background:#0d131a;color:#f5f9fc;font-family:system-ui,sans-serif;padding:2.5rem;max-width:720px;margin:0 auto;line-height:1.6;">
+                      <h1 style="color:#ffb300;">⚠️ Proyecto .NET detectado sin compilar</h1>
+                      <p>Subiste el código fuente (<code>*.csproj</code>) de <strong>$appName</strong>, pero CajitaPaaS necesita los archivos compilados para ejecutarlo en Android con .NET 8.</p>
+                      <div style="background:#131c27;border:1px solid #223244;border-radius:12px;padding:1.2rem;margin:1rem 0;">
+                        <strong>📦 Cómo publicarlo en 1 paso desde tu PC:</strong><br/>
+                        <code style="display:block;margin-top:0.5rem;color:#00e5a3;font-size:1rem;">dotnet publish -c Release -o ./publish</code>
+                      </div>
+                      <p>Luego comprime el contenido de la carpeta <code>publish/</code> (donde están <code>*.dll</code>, <code>*.runtimeconfig.json</code> y <code>wwwroot/</code>) en un archivo <code>.zip</code> y súbelo en CajitaPaaS.</p>
+                    </body>
+                    </html>
+                """.trimIndent().toByteArray(Charsets.UTF_8)
+                val header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${guideHtml.size}\r\nConnection: close\r\n\r\n"
+                out.write(header.toByteArray(Charsets.UTF_8))
+                out.write(guideHtml)
+                return
             }
+            val fallbackHtml = appRootDir.walkTopDown()
+                .onEnter { it.name != "node_modules" && it.name != "lib" && !it.name.startsWith(".") }
+                .firstOrNull {
+                    it.isFile && it.extension.lowercase() in listOf("html", "htm")
+                }
             if (fallbackHtml != null) {
                 targetFile = fallbackHtml
             }

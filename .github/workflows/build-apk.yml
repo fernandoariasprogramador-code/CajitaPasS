@@ -53,16 +53,16 @@ jobs:
           chmod 755 android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
 
           # Asegurar saltos de línea LF en scripts para el contenedor Alpine
-          sed -i 's/\r$//' scripts/build_mariadb_alpine_arm64.sh
-          chmod 755 scripts/build_mariadb_alpine_arm64.sh
+          sed -i 's/\r$//' scripts/build_mariadb_alpine_arm64.sh scripts/build_dotnet_alpine_arm64.sh
+          chmod 755 scripts/build_mariadb_alpine_arm64.sh scripts/build_dotnet_alpine_arm64.sh
 
-          # Extraer binarios ARM64 (aarch64) e inicializar datadir oficial de MariaDB Alpine
+          # Extraer binarios ARM64 (aarch64) e inicializar datadir oficial de MariaDB Alpine + .NET 8 Runtime
           set -o pipefail
           docker run --rm \
             -v "$PWD:/workspace" \
-            alpine:3.20 /bin/sh /workspace/scripts/build_mariadb_alpine_arm64.sh 2>&1 | tee /tmp/alpine_mdb.log || {
-              tail -n 9 /tmp/alpine_mdb.log | while IFS= read -r l; do
-                [ -n "$l" ] && echo "::error title=MariaDB-Alpine::$l"
+            alpine:3.20 /bin/sh -c "/workspace/scripts/build_mariadb_alpine_arm64.sh && /workspace/scripts/build_dotnet_alpine_arm64.sh" 2>&1 | tee /tmp/alpine_mdb.log || {
+              tail -n 15 /tmp/alpine_mdb.log | while IFS= read -r l; do
+                [ -n "$l" ] && echo "::error title=Alpine-Runtime::$l"
               done
               exit 1
             }
