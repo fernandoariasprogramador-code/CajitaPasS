@@ -154,6 +154,31 @@ class EmbeddedDatabaseEngine(private val context: Context) {
     }
 
     /**
+     * Almacén compartido de dependencias NPM instaladas por el usuario (estilo store global).
+     * Evita duplicar carpetas `node_modules` entre proyectos.
+     */
+    fun getSharedNodeModulesPath(): String {
+        return File(context.filesDir, "cps_shared_node_modules/node_modules").apply { mkdirs() }.absolutePath
+    }
+
+    fun getInnoDbBufferPoolMb(): Int {
+        return prefs.getInt("expert_innodb_buffer_mb", 32).coerceIn(16, 512)
+    }
+
+    @Synchronized
+    fun applyInnoDbBufferPoolSize(bufferMb: Int) {
+        val safeMb = bufferMb.coerceIn(16, 512)
+        val oldMb = getInnoDbBufferPoolMb()
+        prefs.edit().putInt("expert_innodb_buffer_mb", safeMb).apply()
+        writeMyCnfConfiguration()
+        if (oldMb != safeMb && mariadbProcess?.isAlive == true) {
+            runCatching { mariadbProcess?.destroy() }
+            mariadbProcess = null
+            ensureMariaDbDaemonRunning()
+        }
+    }
+
+    /**
      * Elimina cualquier resto antiguo de bases SQLite para evitar conflictos de almacenamiento.
      */
     private fun cleanupLegacySqliteFiles() {
@@ -279,6 +304,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
     }
 
     private fun writeMyCnfConfiguration() {
+        val bufferPoolMb = getInnoDbBufferPoolMb()
         val cnfContent = """
             [mysqld]
             datadir=${dataDir.absolutePath}
@@ -293,7 +319,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             skip-name-resolve
             innodb-data-file-path=ibdata1:12M:autoextend
             innodb-log-file-size=8M
-            innodb-buffer-pool-size=32M
+            innodb-buffer-pool-size=${bufferPoolMb}M
             loose-innodb-use-native-aio=0
             innodb-flush-method=fsync
             max-connections=60
@@ -661,6 +687,177 @@ class EmbeddedDatabaseEngine(private val context: Context) {
             .put("database", safeDb)
             .put("columns", cols)
             .put("rows", rows)
+    }
+
+    /**
+     * Genera un volcado completo `.sql` (estructura DDL + datos INSERT) de la base de datos indicada.
+     */
+    fun exportDatabaseSql(database: String): JSONObject {
+        val safeDb = sanitizeDbName(database)
+        val tblRes = runMariaDbCli(safeDb, "SHOW TABLES;")
+        if (tblRes.exitCode != 0) {
+            throw IllegalStateException(tblRes.stderr.trim().ifEmpty { "No se pudo acceder a la base '$safeDb'" })
+        }
+
+        val tblLines = tblRes.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val tables = if (tblLines.size > 1) tblLines.drop(1) else emptyList()
+
+        val sb = StringBuilder()
+        sb.append("-- ============================================================================\n")
+        sb.append("-- CajitaPaaS (CPS) SQL Backup Dump\n")
+        sb.append("-- Base de Datos: `$safeDb`\n")
+        sb.append("-- Motor: MariaDB Alpine ARM64 (InnoDB)\n")
+        sb.append("-- Fecha: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}\n")
+        sb.append("-- ============================================================================\n\n")
+        sb.append("SET FOREIGN_KEY_CHECKS=0;\n")
+        sb.append("SET SQL_MODE=\"NO_AUTO_VALUE_ON_ZERO\";\n")
+        sb.append("CREATE DATABASE IF NOT EXISTS `$safeDb` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;\n")
+        sb.append("USE `$safeDb`;\n\n")
+
+        var totalRowsExported = 0
+
+        for (tbl in tables) {
+            val cleanTbl = tbl.replace("`", "")
+            val createRes = runMariaDbCli(safeDb, "SHOW CREATE TABLE `$cleanTbl`;")
+            if (createRes.exitCode == 0 && createRes.stdout.isNotBlank()) {
+                val afterHeader = createRes.stdout.substringAfter('\n', "")
+                val ddl = afterHeader.substringAfter('\t', "").trim()
+                if (ddl.isNotEmpty()) {
+                    sb.append("-- --------------------------------------------------------\n")
+                    sb.append("-- Estructura de tabla para `$cleanTbl`\n")
+                    sb.append("-- --------------------------------------------------------\n")
+                    sb.append("DROP TABLE IF EXISTS `$cleanTbl`;\n")
+                    sb.append(ddl).append(";\n\n")
+                }
+            }
+
+            val colsRes = runMariaDbCli(safeDb, "SHOW COLUMNS FROM `$cleanTbl`;")
+            if (colsRes.exitCode == 0) {
+                val colLines = colsRes.stdout.lines().filter { it.isNotBlank() }
+                val colNames = colLines.drop(1).map { it.substringBefore('\t').trim() }.filter { it.isNotEmpty() }
+                if (colNames.isNotEmpty()) {
+                    val quoteExpr = colNames.joinToString(", ', ', ") { col ->
+                        "COALESCE(QUOTE(`" + col.replace("`", "") + "`), 'NULL')"
+                    }
+                    val dataSql = "SELECT CONCAT('(', $quoteExpr, ')') AS row_tuple FROM `$cleanTbl`;"
+                    val dataRes = runMariaDbCli(safeDb, dataSql)
+                    if (dataRes.exitCode == 0) {
+                        val tupleLines = dataRes.stdout.lines().filter { it.isNotBlank() }.drop(1)
+                        if (tupleLines.isNotEmpty()) {
+                            totalRowsExported += tupleLines.size
+                            val colHeader = colNames.joinToString(", ") { "`${it.replace("`", "")}`" }
+                            sb.append("-- Volcado de datos para la tabla `$cleanTbl` (${tupleLines.size} filas)\n")
+                            for (chunk in tupleLines.chunked(100)) {
+                                sb.append("INSERT INTO `$cleanTbl` ($colHeader) VALUES\n")
+                                sb.append(chunk.joinToString(",\n"))
+                                sb.append(";\n")
+                            }
+                            sb.append("\n")
+                        }
+                    }
+                }
+            }
+        }
+
+        sb.append("SET FOREIGN_KEY_CHECKS=1;\n")
+
+        return JSONObject()
+            .put("status", "success")
+            .put("database", safeDb)
+            .put("filename", "${safeDb}_backup.sql")
+            .put("tablesCount", tables.size)
+            .put("rowsCount", totalRowsExported)
+            .put("sql", sb.toString())
+    }
+
+    /**
+     * Importa y ejecuta un script o volcado `.sql` completo dentro de la base de datos seleccionada
+     * (creándola primero si no existía).
+     */
+    fun importDatabaseSql(database: String, sqlScript: String): JSONObject {
+        val safeDb = sanitizeDbName(database)
+        val trimmedScript = sqlScript.trim()
+        if (trimmedScript.isEmpty()) {
+            throw IllegalArgumentException("El contenido del archivo .SQL está vacío.")
+        }
+
+        if (!ensureMariaDbDaemonRunning()) {
+            throw IllegalStateException("El motor MariaDB Alpine no está activo ($lastDaemonLog)")
+        }
+
+        // Asegurar que la base de datos destino exista antes de importar
+        createDatabase(safeDb, null, null)
+
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val muslLinker = File(nativeLibDir, "libalpine_musl.so")
+        val mariadbCliBin = File(nativeLibDir, "libmariadb_cli.so")
+        if (!mariadbCliBin.exists()) {
+            throw IllegalStateException("Cliente libmariadb_cli.so no encontrado")
+        }
+        runCatching { Os.chmod(mariadbCliBin.absolutePath, 493) }
+
+        val tempSqlFile = File(tmpDir, "import_${System.currentTimeMillis()}_${System.nanoTime()}.sql")
+        try {
+            tempSqlFile.writeText(trimmedScript, Charsets.UTF_8)
+
+            val libSearchPath = "${libSymlinkDir.absolutePath}:$nativeLibDir"
+            val args = listOf(
+                muslLinker.absolutePath,
+                "--library-path",
+                libSearchPath,
+                mariadbCliBin.absolutePath,
+                "--no-defaults",
+                "--protocol=TCP",
+                "-h",
+                "127.0.0.1",
+                "-P",
+                INTERNAL_MARIADB_PORT.toString(),
+                "-u",
+                "root",
+                "-p$DEFAULT_DB_PASS",
+                "--default-character-set=utf8mb4",
+                "-D",
+                safeDb
+            )
+
+            val pb = ProcessBuilder(args)
+                .directory(mariadbRootDir)
+                .redirectInput(tempSqlFile)
+            val env = pb.environment()
+            env["HOME"] = mariadbRootDir.absolutePath
+            env["TMPDIR"] = tmpDir.absolutePath
+            env["LD_LIBRARY_PATH"] = libSearchPath
+
+            val proc = pb.start()
+            val stdoutFuture = executor.submit<String> {
+                proc.inputStream.bufferedReader(Charsets.UTF_8).readText()
+            }
+            val stderrFuture = executor.submit<String> {
+                proc.errorStream.bufferedReader(Charsets.UTF_8).readText()
+            }
+
+            val finished = proc.waitFor(60, TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                throw IllegalStateException("Tiempo de espera agotado (60s) importando el archivo SQL.")
+            }
+
+            val errText = runCatching { stderrFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+            if (proc.exitValue() != 0) {
+                val cleanErr = errText.lines()
+                    .filterNot { it.contains("Warning:", ignoreCase = true) }
+                    .joinToString("\n")
+                    .trim()
+                throw IllegalStateException(cleanErr.ifEmpty { "Error al importar el script SQL (código ${proc.exitValue()})" })
+            }
+
+            return JSONObject()
+                .put("status", "success")
+                .put("database", safeDb)
+                .put("message", "Archivo SQL importado correctamente en la base de datos '$safeDb'.")
+        } finally {
+            runCatching { tempSqlFile.delete() }
+        }
     }
 
     /**

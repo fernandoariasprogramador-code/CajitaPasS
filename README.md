@@ -111,6 +111,25 @@ El panel de CajitaPaaS te permite desplegar dos tipos de aplicaciones: **Fronten
 
 Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcionarán inmediatamente sin necesidad de subirlos ni instalarlos**.
 
+#### ➕ ¿Y si mi proyecto usa otras librerías de NPM (`zod`, `socket.io`, `dayjs`, `nodemailer`, etc.)?
+
+¡CajitaPaaS las detecta e instala con tu autorización!
+1. Al subir tu archivo `.zip`, el servidor analiza automáticamente tu `package.json`.
+2. Si detecta dependencias que aún no están en el teléfono, te muestra una ventana en el Panel Web solicitando tu **autorización previa**.
+3. Al presionar **"✅ Autorizar e Instalar"**, CajitaPaaS descarga e instala los paquetes directamente desde `registry.npmjs.org` dentro de un **Almacén Compartido (`cps_shared_node_modules`)** estilo `pnpm` para no duplicar espacio entre proyectos, y reinicia tu API automáticamente.
+
+---
+
+### 🛠️ Herramientas en Caliente desde el Panel Web (Sin Resubir el `.ZIP`)
+
+Cada aplicación Backend encendida cuenta con controles instantáneos en su tarjeta:
+
+- **📜 Consola en Vivo**: Abre una terminal en tiempo real que muestra las salidas `console.log()`, errores, estado del proceso Node.js, límite de memoria RAM y contador de reinicios. Permite limpiar la consola o reiniciar la app con 1 clic.
+- **⚙️ Variables `.env` (Editor Visual)**: Lee y muestra todas las variables que trae el archivo `.env` de tu proyecto (o las variables por defecto inyectadas por CPS). Puedes editar valores, agregar nuevas claves o alternar al modo texto crudo; al guardar, el backend se reinicia en 1 segundo con los nuevos valores.
+- **📦 Dependencias**: Inspecciona qué librerías de tu `package.json` están preinstaladas de fábrica, cuáles están en el almacén compartido y permite instalar paquetes adicionales de NPM bajo demanda.
+- **🗄️ Cambiar BD**: Cambia a qué base de datos MySQL/MariaDB apunta tu aplicación en caliente, sincronizando automáticamente el cambio con su archivo `.env`.
+- **🧠 Modo Experto (Avanzado)**: Un interruptor opcional al pie de tus aplicaciones que permite configurar el **límite de memoria RAM por defecto y por cada App (`--max-old-space-size`, desde 128 MB hasta 1024 MB)**, el **Auto-Reinicio Inteligente (Watchdog estilo PM2)** con retroceso exponencial y el tamaño del **Buffer Pool de MariaDB InnoDB**.
+
 ---
 
 ### 📝 Ejemplo mínimo de Backend API (`server.js`)
@@ -219,6 +238,12 @@ Puedes administrar tus bases de datos, crear tablas, importar dumps `.sql` o rev
 >   creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 > );
 > ```
+
+### 📥 Exportar Backup (`.SQL`) e 📤 Importar Archivos `.SQL` desde el Navegador
+
+Sin necesidad de abrir DBeaver en una PC, en la pestaña **🗄️ 2. Mis Bases de Datos y Modo PC** del Panel Web dispones de:
+- **📥 Descargar Backup (.SQL)**: Genera un archivo `<base>_backup.sql` completo con todas las estructuras `CREATE TABLE` y los registros `INSERT INTO` de cualquier base de datos con un solo clic.
+- **📤 Importar Archivo (.SQL)**: Sube un archivo `.sql` desde tu celular o computadora para crear tablas y poblar datos automáticamente en la base de datos que elijas.
 
 ---
 

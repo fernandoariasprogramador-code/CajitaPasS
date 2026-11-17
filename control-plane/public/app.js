@@ -223,6 +223,7 @@ function syncAllData() {
   fetchBridgeStatus();
   fetchTunnelStatus();
   fetchFailoverStatus();
+  fetchExpertConfig();
 }
 
 // Cambio de pestañas (Mis Apps vs Mis Bases de Datos)
@@ -600,14 +601,21 @@ async function runProtectedUpdate({
     // ÉXITO: Pantalla verde + tilde + confeti
     if (res.ok) {
       launchConfetti();
-      showResultModal({
-        type: 'success',
-        title: '¡Sistema actualizado con éxito!',
-        desc: 'Tu nueva versión pasó la prueba y ya está online para todos sin haber cortado el servicio.',
-        pill: '✨ ¡Todo andando de diez!'
-      });
+      const missingDeps = data?.deployment?.missingDependencies || [];
       loadProjects();
       checkServerStatus();
+      fetchExpertConfig();
+
+      if (Array.isArray(missingDeps) && missingDeps.length > 0) {
+        openDependenciesModal(appName, true);
+      } else {
+        showResultModal({
+          type: 'success',
+          title: '¡Sistema actualizado con éxito!',
+          desc: 'Tu nueva versión pasó la prueba y ya está online para todos sin haber cortado el servicio.',
+          pill: '✨ ¡Todo andando de diez!'
+        });
+      }
       return;
     }
 
@@ -679,7 +687,7 @@ function launchConfetti() {
 }
 
 // ============================================================================
-// 6. LISTA DE APPS ACTIVAS Y BOTÓN DE APAGAR
+// 6. LISTA DE APPS ACTIVAS, CONSOLA EN VIVO, EDITOR .ENV, DEPENDENCIAS Y RAM
 // ============================================================================
 
 async function loadProjects() {
@@ -689,6 +697,8 @@ async function loadProjects() {
     const data = await res.json();
 
     appsListContainer.innerHTML = '';
+    const expertPerAppRamList = document.getElementById('expertPerAppRamList');
+    if (expertPerAppRamList) expertPerAppRamList.innerHTML = '';
 
     if (!data.pm2Processes || data.pm2Processes.length === 0) {
       appsListContainer.innerHTML = `
@@ -696,11 +706,15 @@ async function loadProjects() {
           <span style="color: var(--text-muted);">Todavía no subiste ninguna app. ¡Elegí un .ZIP arriba para empezar!</span>
         </div>
       `;
+      if (expertPerAppRamList) {
+        expertPerAppRamList.innerHTML = `<div style="color: var(--text-muted); font-size: 0.85rem;">No hay apps activas todavía.</div>`;
+      }
       return;
     }
 
     const activeSlots = data.activeSlots || {};
     const lanHost = data.lanIp || window.location.hostname || '127.0.0.1';
+    const defaultMaxRam = data.defaultMaxRamMb || 256;
 
     for (const proc of data.pm2Processes) {
       if (proc.name === 'cajita-control-plane') continue;
@@ -716,8 +730,12 @@ async function loadProjects() {
       const secondaryNote = isWebFront
         ? `(También en :${port})`
         : `(Proxy en :8080${route.replace(/\*$/, '')})`;
-      const btnOpenLabel = isWebFront ? '🌐 Abrir Página Web (:8080)' : `🔌 Abrir API (:${port})`;
+      const btnOpenLabel = isWebFront ? '🌐 Abrir Web (:8080)' : `🔌 Abrir API (:${port})`;
       const slotColor = (slotInfo.activeColor || (proc.name.endsWith('-blue') ? 'blue' : 'green')).toUpperCase();
+      const maxRamMb = slotInfo.maxRamMb || defaultMaxRam;
+      const restartCount = slotInfo.restartCount || 0;
+      const missingDeps = Array.isArray(slotInfo.missingDependencies) ? slotInfo.missingDependencies : [];
+
       const roleBadge =
         role === 'frontend'
           ? '<span style="background:rgba(24,144,255,0.2);color:#52a9ff;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.75rem;font-weight:800;margin-left:0.4rem;">🖥️ FRONTEND</span>'
@@ -725,25 +743,30 @@ async function loadProjects() {
           ? '<span style="background:rgba(0,229,163,0.18);color:#00e5a3;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.75rem;font-weight:800;margin-left:0.4rem;">⚙️ BACKEND API</span>'
           : '<span style="background:rgba(255,255,255,0.12);color:#fff;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.75rem;font-weight:800;margin-left:0.4rem;">🚀 FULLSTACK</span>';
 
+      const missingDepsBadge =
+        missingDeps.length > 0
+          ? `<button type="button" class="btn-open-deps" data-app="${baseAppName}" style="background:rgba(255,179,0,0.2);border:1px solid var(--amber);color:#ffd54f;padding:0.15rem 0.55rem;border-radius:6px;font-size:0.74rem;font-weight:800;margin-left:0.4rem;cursor:pointer;">⚠️ Faltan ${missingDeps.length} dependencias (Autorizar)</button>`
+          : '';
+
       const item = document.createElement('div');
       item.className = 'app-item';
       item.innerHTML = `
         <div class="app-item-info">
           <span class="live-dot"></span>
           <div>
-            <div class="app-item-name">
-              ${baseAppName} ${roleBadge}
+            <div class="app-item-name" style="display:flex;align-items:center;flex-wrap:wrap;gap:0.25rem;">
+              ${baseAppName} ${roleBadge} ${missingDepsBadge}
             </div>
             <div class="app-item-meta">
               URL Principal: <a href="${primaryUrl}" target="_blank" rel="noopener" style="color:var(--accent-mint);font-weight:800;font-family:monospace;">${primaryUrl}</a>
               <span style="opacity:0.8;">${secondaryNote}</span> ·
               Ruta: <strong>${route}</strong> ·
               Slot <strong>${slotColor}</strong>
-              ${role !== 'frontend' ? ` · BD: <strong style="color:var(--accent-mint); font-family:monospace;">${slotInfo.dbName || slotInfo.database || 'cajitapaas'}</strong>` : ''}
+              ${role !== 'frontend' ? ` · BD: <strong style="color:var(--accent-mint); font-family:monospace;">${slotInfo.dbName || slotInfo.database || 'cajitapaas'}</strong> · RAM máx: <strong>${maxRamMb} MB</strong>${restartCount > 0 ? ` · Reinicios: <strong style="color:var(--amber);">${restartCount}</strong>` : ''}` : ''}
             </div>
           </div>
         </div>
-        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+        <div style="display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap;">
           <a
             href="${primaryUrl}"
             target="_blank"
@@ -754,6 +777,31 @@ async function loadProjects() {
             ${btnOpenLabel}
           </a>
           ${role !== 'frontend' ? `
+          <button
+            type="button"
+            class="btn btn-secondary btn-small btn-open-console"
+            data-app="${baseAppName}"
+            title="Ver consola y logs en vivo"
+          >
+            📜 Consola
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary btn-small btn-open-env"
+            data-app="${baseAppName}"
+            title="Editar variables de entorno .env"
+          >
+            ⚙️ Variables .env
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary btn-small btn-open-deps"
+            data-app="${baseAppName}"
+            style="${missingDeps.length > 0 ? 'border-color:var(--amber);color:#ffd54f;' : ''}"
+            title="Ver o autorizar dependencias NPM"
+          >
+            📦 Dependencias${missingDeps.length > 0 ? ` (${missingDeps.length})` : ''}
+          </button>
           <button
             type="button"
             class="btn btn-small btn-change-db"
@@ -772,7 +820,7 @@ async function loadProjects() {
             data-route="${route}"
             data-db="${slotInfo.dbName || slotInfo.database || ''}"
           >
-            ✏️ Seleccionar para Actualizar
+            ✏️ Actualizar
           </button>
           <button type="button" class="btn btn-danger btn-small btn-stop-app" data-app="${baseAppName}">
             🛑 Apagar
@@ -780,7 +828,48 @@ async function loadProjects() {
         </div>
       `;
       appsListContainer.appendChild(item);
+
+      // Añadir fila en el panel de Modo Experto para ajustar la RAM individual de esta app
+      if (expertPerAppRamList && role !== 'frontend') {
+        const ramRow = document.createElement('div');
+        ramRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.55rem 0.85rem;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;flex-wrap:wrap;';
+        ramRow.innerHTML = `
+          <div>
+            <strong style="color:var(--accent-mint);font-family:monospace;">${baseAppName}</strong>
+            <span style="font-size:0.8rem;color:var(--text-muted);margin-left:0.4rem;">(Puerto :${port})</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.5rem;">
+            <span style="font-size:0.82rem;color:var(--text-muted);">RAM máx:</span>
+            <select class="expert-app-ram-input" data-app="${baseAppName}" style="width:auto;min-height:38px;padding:0.35rem 0.7rem;font-size:0.88rem;">
+              <option value="128" ${maxRamMb === 128 ? 'selected' : ''}>128 MB</option>
+              <option value="192" ${maxRamMb === 192 ? 'selected' : ''}>192 MB</option>
+              <option value="256" ${maxRamMb === 256 ? 'selected' : ''}>256 MB</option>
+              <option value="384" ${maxRamMb === 384 ? 'selected' : ''}>384 MB</option>
+              <option value="512" ${maxRamMb === 512 ? 'selected' : ''}>512 MB</option>
+              <option value="768" ${maxRamMb === 768 ? 'selected' : ''}>768 MB</option>
+              <option value="1024" ${maxRamMb === 1024 ? 'selected' : ''}>1024 MB</option>
+            </select>
+          </div>
+        `;
+        expertPerAppRamList.appendChild(ramRow);
+      }
     }
+
+    if (expertPerAppRamList && expertPerAppRamList.children.length === 0) {
+      expertPerAppRamList.innerHTML = `<div style="color: var(--text-muted); font-size: 0.85rem;">Subí un Backend API para asignarle un límite de memoria específico.</div>`;
+    }
+
+    appsListContainer.querySelectorAll('.btn-open-console').forEach((btn) => {
+      btn.addEventListener('click', () => openLiveConsoleModal(btn.dataset.app));
+    });
+
+    appsListContainer.querySelectorAll('.btn-open-env').forEach((btn) => {
+      btn.addEventListener('click', () => openEnvEditorModal(btn.dataset.app));
+    });
+
+    appsListContainer.querySelectorAll('.btn-open-deps').forEach((btn) => {
+      btn.addEventListener('click', () => openDependenciesModal(btn.dataset.app, false));
+    });
 
     appsListContainer.querySelectorAll('.btn-change-db').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -796,12 +885,18 @@ async function loadProjects() {
           });
           const d = await res.json();
           if (res.ok) {
-            showToast(`Base de datos de "${app}" cambiada a "${newDb.trim()}".`);
-            loadDeployedApps();
+            loadProjects();
+            loadDatabases();
+            showResultModal({
+              type: 'success',
+              title: '¡Base de Datos Actualizada!',
+              desc: `El servicio "${app}" ahora está conectado dinámicamente a la base "${newDb.trim()}".`,
+              pill: '🗄️ Cambio aplicado en caliente y sincronizado con .env'
+            });
           } else {
             alert(d.error || 'Error al cambiar la base de datos');
           }
-        } catch (err) {
+        } catch (_err) {
           alert('Error de conexión al cambiar la base de datos');
         }
       });
@@ -841,7 +936,540 @@ async function loadProjects() {
 }
 
 // ============================================================================
-// 7. MODO PC (PUENTE DBEAVER) Y BASES DE DATOS
+// 6.1 MODAL DE DEPENDENCIAS NPM (CON AUTORIZACIÓN PREVIA DEL USUARIO)
+// ============================================================================
+
+const modalDependencies = document.getElementById('modalDependencies');
+const depModalAppName = document.getElementById('depModalAppName');
+const depAuthWarningBox = document.getElementById('depAuthWarningBox');
+const depListContainer = document.getElementById('depListContainer');
+const inputExtraNpmPkg = document.getElementById('inputExtraNpmPkg');
+const btnInstallSinglePkg = document.getElementById('btnInstallSinglePkg');
+const btnAuthorizeInstallDeps = document.getElementById('btnAuthorizeInstallDeps');
+const btnCancelDepModal = document.getElementById('btnCancelDepModal');
+const btnCloseDepModalTop = document.getElementById('btnCloseDepModalTop');
+
+let activeDepAppName = '';
+
+async function openDependenciesModal(appName, isAutoPrompt = false) {
+  activeDepAppName = appName;
+  if (!modalDependencies) return;
+  depModalAppName.textContent = appName;
+  depListContainer.innerHTML = `<div style="color:var(--text-muted);padding:0.5rem;">🔍 Escaneando package.json de "${appName}"...</div>`;
+  modalDependencies.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`./api/v1/projects/${encodeURIComponent(appName)}/dependencies`, {
+      headers: authHeaders()
+    });
+    const data = await res.json();
+    renderDependenciesModalContent(data, isAutoPrompt);
+  } catch (_err) {
+    depListContainer.innerHTML = `<div style="color:var(--danger);padding:0.5rem;">No se pudo leer las dependencias del proyecto.</div>`;
+  }
+}
+
+function renderDependenciesModalContent(data, isAutoPrompt = false) {
+  const deps = Array.isArray(data?.dependencies) ? data.dependencies : [];
+  const missing = Array.isArray(data?.missing) ? data.missing : [];
+
+  if (missing.length > 0) {
+    depAuthWarningBox.classList.remove('hidden');
+    depAuthWarningBox.innerHTML = `
+      ⚠️ <strong>Autorización requerida:</strong> El proyecto <strong>${data.appName}</strong> necesita instalar <strong>${missing.length} dependencia(s)</strong> (${missing.map((m) => `<code>${m.name}</code>`).join(', ')}).<br/>
+      ¿Autorizás a CajitaPaaS a descargarlas e instalarlas en el almacén compartido del teléfono?
+    `;
+    btnAuthorizeInstallDeps.disabled = false;
+    btnAuthorizeInstallDeps.textContent = `✅ Autorizar e Instalar (${missing.length})`;
+  } else {
+    depAuthWarningBox.classList.add('hidden');
+    btnAuthorizeInstallDeps.disabled = true;
+    btnAuthorizeInstallDeps.textContent = '✔ Todas las dependencias están instaladas';
+  }
+
+  if (deps.length === 0) {
+    depListContainer.innerHTML = `
+      <div style="color:var(--text-muted);padding:0.5rem;">
+        ${data?.hasPackageJson ? 'Este proyecto no declara dependencias adicionales en su package.json.' : 'Este proyecto no incluye archivo package.json (usa los módulos globales de CajitaPaaS).'}
+      </div>
+    `;
+    return;
+  }
+
+  depListContainer.innerHTML = deps
+    .map((d) => {
+      let badge = '';
+      if (d.status === 'preinstalled') {
+        badge = '<span style="color:var(--accent-mint);font-weight:800;font-size:0.8rem;">🟢 Incluida de fábrica</span>';
+      } else if (d.status === 'shared') {
+        badge = '<span style="color:#52a9ff;font-weight:800;font-size:0.8rem;">📦 En almacén compartido</span>';
+      } else if (d.status === 'local') {
+        badge = '<span style="color:#b388ff;font-weight:800;font-size:0.8rem;">📂 En carpeta local</span>';
+      } else if (d.status === 'builtin') {
+        badge = '<span style="color:var(--text-muted);font-weight:700;font-size:0.8rem;">⚙️ Nativa Node.js</span>';
+      } else {
+        badge = '<span style="color:var(--amber);font-weight:800;font-size:0.8rem;">🟠 Falta instalar (Requiere autorización)</span>';
+      }
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:0.45rem 0.5rem;border-bottom:1px solid var(--border);gap:0.5rem;flex-wrap:wrap;">
+          <div>
+            <strong style="font-family:monospace;color:var(--text-main);">${d.name}</strong>
+            <span style="color:var(--text-muted);font-size:0.8rem;margin-left:0.35rem;">${d.version || ''}</span>
+          </div>
+          <div>${badge}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+async function triggerAuthorizedNpmInstall(customPackages = null) {
+  if (!activeDepAppName) return;
+  btnAuthorizeInstallDeps.disabled = true;
+  if (btnInstallSinglePkg) btnInstallSinglePkg.disabled = true;
+  const origBtnText = btnAuthorizeInstallDeps.textContent;
+  btnAuthorizeInstallDeps.textContent = '⏳ Descargando e instalando en almacén compartido...';
+
+  try {
+    const bodyPayload = customPackages ? { packages: customPackages } : {};
+    const res = await fetch(`./api/v1/projects/${encodeURIComponent(activeDepAppName)}/dependencies/install`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyPayload)
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (inputExtraNpmPkg) inputExtraNpmPkg.value = '';
+      if (data.dependencyReport) {
+        renderDependenciesModalContent(data.dependencyReport, false);
+      }
+      loadProjects();
+      fetchExpertConfig();
+      launchConfetti();
+    } else {
+      alert(data.error || 'No se pudieron instalar las dependencias.');
+      btnAuthorizeInstallDeps.textContent = origBtnText;
+      btnAuthorizeInstallDeps.disabled = false;
+    }
+  } catch (_err) {
+    alert('Error de red al descargar paquetes desde NPM.');
+    btnAuthorizeInstallDeps.textContent = origBtnText;
+    btnAuthorizeInstallDeps.disabled = false;
+  } finally {
+    if (btnInstallSinglePkg) btnInstallSinglePkg.disabled = false;
+  }
+}
+
+if (btnAuthorizeInstallDeps) {
+  btnAuthorizeInstallDeps.addEventListener('click', () => triggerAuthorizedNpmInstall(null));
+}
+if (btnInstallSinglePkg) {
+  btnInstallSinglePkg.addEventListener('click', () => {
+    const pkg = inputExtraNpmPkg ? inputExtraNpmPkg.value.trim() : '';
+    if (!pkg) return;
+    triggerAuthorizedNpmInstall([pkg]);
+  });
+}
+[btnCancelDepModal, btnCloseDepModalTop].forEach((b) => {
+  if (b) b.addEventListener('click', () => modalDependencies.classList.add('hidden'));
+});
+
+// ============================================================================
+// 6.2 MODAL EDITOR VISUAL DE VARIABLES DE ENTORNO (.ENV)
+// ============================================================================
+
+const modalEnvEditor = document.getElementById('modalEnvEditor');
+const envModalAppName = document.getElementById('envModalAppName');
+const envModalSubtitle = document.getElementById('envModalSubtitle');
+const envRowsContainer = document.getElementById('envRowsContainer');
+const envRawContainer = document.getElementById('envRawContainer');
+const envRawTextarea = document.getElementById('envRawTextarea');
+const btnAddEnvRow = document.getElementById('btnAddEnvRow');
+const btnFillDefaultDbEnv = document.getElementById('btnFillDefaultDbEnv');
+const btnToggleRawEnvMode = document.getElementById('btnToggleRawEnvMode');
+const btnSaveEnvModal = document.getElementById('btnSaveEnvModal');
+const btnCancelEnvModal = document.getElementById('btnCancelEnvModal');
+const btnCloseEnvModalTop = document.getElementById('btnCloseEnvModalTop');
+
+let activeEnvAppName = '';
+let activeEnvInjectedDefaults = {};
+let isRawEnvMode = false;
+
+async function openEnvEditorModal(appName) {
+  activeEnvAppName = appName;
+  isRawEnvMode = false;
+  if (!modalEnvEditor) return;
+
+  envModalAppName.textContent = appName;
+  envRowsContainer.classList.remove('hidden');
+  envRawContainer.classList.add('hidden');
+  if (btnToggleRawEnvMode) btnToggleRawEnvMode.textContent = '📝 Modo Texto .env';
+  envRowsContainer.innerHTML = `<div style="color:var(--text-muted);padding:0.5rem;">Cargando archivo .env de "${appName}"...</div>`;
+  modalEnvEditor.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`./api/v1/projects/${encodeURIComponent(appName)}/env`, {
+      headers: authHeaders()
+    });
+    const data = await res.json();
+    activeEnvInjectedDefaults = data.injectedDefaults || {};
+    if (envModalSubtitle) {
+      envModalSubtitle.innerHTML = data.hasEnvFile
+        ? `📂 Mostrando los valores actuales del archivo <code>${data.envFileName || '.env'}</code> incluido en tu proyecto.`
+        : `⚡ Tu proyecto no incluía un archivo <code>.env</code>; mostrando las variables activas inyectadas por CajitaPaaS.`;
+    }
+    renderEnvRows(Array.isArray(data.variables) ? data.variables : []);
+    if (envRawTextarea) envRawTextarea.value = data.rawContent || '';
+  } catch (_err) {
+    envRowsContainer.innerHTML = `<div style="color:var(--danger);padding:0.5rem;">Error cargando las variables .env</div>`;
+  }
+}
+
+function renderEnvRows(variables) {
+  envRowsContainer.innerHTML = '';
+  if (variables.length === 0) {
+    addEnvRowToDom('', '');
+    return;
+  }
+  for (const item of variables) {
+    addEnvRowToDom(item.key || '', item.value ?? '');
+  }
+}
+
+function addEnvRowToDom(key = '', value = '') {
+  const row = document.createElement('div');
+  row.className = 'env-kv-row';
+  row.style.cssText = 'display:flex;gap:0.45rem;align-items:center;';
+  row.innerHTML = `
+    <input type="text" class="env-key-input" placeholder="CLAVE (ej. DB_NAME)" value="${String(key).replace(/"/g, '&quot;')}" style="flex:1;min-height:40px;padding:0.4rem 0.65rem;font-family:monospace;font-size:0.88rem;font-weight:700;color:var(--accent-mint);" />
+    <span style="color:var(--text-muted);font-weight:800;">=</span>
+    <input type="text" class="env-val-input" placeholder="Valor..." value="${String(value).replace(/"/g, '&quot;')}" style="flex:1.6;min-height:40px;padding:0.4rem 0.65rem;font-family:monospace;font-size:0.88rem;" />
+    <button type="button" class="btn btn-danger btn-small btn-remove-env-row" style="min-height:40px;padding:0.35rem 0.65rem;" title="Eliminar variable">🗑️</button>
+  `;
+  row.querySelector('.btn-remove-env-row').addEventListener('click', () => {
+    row.remove();
+  });
+  envRowsContainer.appendChild(row);
+}
+
+function collectEnvVariablesFromRows() {
+  const vars = [];
+  envRowsContainer.querySelectorAll('.env-kv-row').forEach((row) => {
+    const k = row.querySelector('.env-key-input')?.value.trim() || '';
+    const v = row.querySelector('.env-val-input')?.value.trim() ?? '';
+    if (k) vars.push({ key: k, value: v });
+  });
+  return vars;
+}
+
+if (btnAddEnvRow) {
+  btnAddEnvRow.addEventListener('click', () => {
+    if (isRawEnvMode) {
+      envRawTextarea.value += (envRawTextarea.value.endsWith('\n') || !envRawTextarea.value ? '' : '\n') + 'NUEVA_VARIABLE=valor\n';
+    } else {
+      addEnvRowToDom('', '');
+      envRowsContainer.scrollTop = envRowsContainer.scrollHeight;
+    }
+  });
+}
+
+if (btnFillDefaultDbEnv) {
+  btnFillDefaultDbEnv.addEventListener('click', () => {
+    const current = collectEnvVariablesFromRows();
+    const map = new Map(current.map((i) => [i.key, i.value]));
+    const defaults = {
+      DB_HOST: activeEnvInjectedDefaults.DB_HOST || '127.0.0.1',
+      DB_PORT: activeEnvInjectedDefaults.DB_PORT || '3306',
+      DB_USER: activeEnvInjectedDefaults.DB_USER || 'cajita_admin',
+      DB_PASSWORD: activeEnvInjectedDefaults.DB_PASSWORD || 'cajitapaas2026',
+      DB_NAME: activeEnvInjectedDefaults.DB_NAME || 'cajitapaas'
+    };
+    for (const [k, v] of Object.entries(defaults)) {
+      map.set(k, v);
+    }
+    const merged = Array.from(map.entries()).map(([key, value]) => ({ key, value }));
+    renderEnvRows(merged);
+    if (envRawTextarea) {
+      envRawTextarea.value = merged.map((i) => `${i.key}=${i.value}`).join('\n');
+    }
+  });
+}
+
+if (btnToggleRawEnvMode) {
+  btnToggleRawEnvMode.addEventListener('click', () => {
+    isRawEnvMode = !isRawEnvMode;
+    if (isRawEnvMode) {
+      const vars = collectEnvVariablesFromRows();
+      envRawTextarea.value = vars.map((i) => `${i.key}=${i.value}`).join('\n');
+      envRowsContainer.classList.add('hidden');
+      envRawContainer.classList.remove('hidden');
+      btnToggleRawEnvMode.textContent = '🔢 Modo Filas Visual';
+    } else {
+      const parsed = [];
+      envRawTextarea.value.split('\n').forEach((line) => {
+        const t = line.trim();
+        if (t && !t.startsWith('#') && t.includes('=')) {
+          const idx = t.indexOf('=');
+          parsed.push({
+            key: t.slice(0, idx).trim(),
+            value: t.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '')
+          });
+        }
+      });
+      renderEnvRows(parsed);
+      envRawContainer.classList.add('hidden');
+      envRowsContainer.classList.remove('hidden');
+      btnToggleRawEnvMode.textContent = '📝 Modo Texto .env';
+    }
+  });
+}
+
+if (btnSaveEnvModal) {
+  btnSaveEnvModal.addEventListener('click', async () => {
+    if (!activeEnvAppName) return;
+    btnSaveEnvModal.disabled = true;
+    btnSaveEnvModal.textContent = '⏳ Guardando y reiniciando...';
+    try {
+      const payload = isRawEnvMode
+        ? { rawContent: envRawTextarea.value }
+        : { variables: collectEnvVariablesFromRows() };
+      const res = await fetch(`./api/v1/projects/${encodeURIComponent(activeEnvAppName)}/env`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        modalEnvEditor.classList.add('hidden');
+        loadProjects();
+        loadDatabases();
+        launchConfetti();
+        showResultModal({
+          type: 'success',
+          title: '¡Variables .env Actualizadas!',
+          desc: `Se guardó el archivo .env de "${activeEnvAppName}" y el servicio se reinició con la nueva configuración.`,
+          pill: '⚙️ Aplicado en caliente sin resubir el .ZIP'
+        });
+      } else {
+        alert(data.error || 'No se pudo guardar el archivo .env');
+      }
+    } catch (_err) {
+      alert('Error de conexión al guardar variables .env');
+    } finally {
+      btnSaveEnvModal.disabled = false;
+      btnSaveEnvModal.textContent = '💾 Guardar .env y Reiniciar App';
+    }
+  });
+}
+
+[btnCancelEnvModal, btnCloseEnvModalTop].forEach((b) => {
+  if (b) b.addEventListener('click', () => modalEnvEditor.classList.add('hidden'));
+});
+
+// ============================================================================
+// 6.3 MODAL CONSOLA DE LOGS EN TIEMPO REAL
+// ============================================================================
+
+const modalLiveConsole = document.getElementById('modalLiveConsole');
+const consoleModalAppName = document.getElementById('consoleModalAppName');
+const consoleModalMeta = document.getElementById('consoleModalMeta');
+const liveConsolePre = document.getElementById('liveConsolePre');
+const btnConsoleRestartApp = document.getElementById('btnConsoleRestartApp');
+const btnConsoleClearLogs = document.getElementById('btnConsoleClearLogs');
+const btnConsoleCopyLogs = document.getElementById('btnConsoleCopyLogs');
+const btnCloseConsoleModal = document.getElementById('btnCloseConsoleModal');
+
+let activeConsoleAppName = '';
+let liveConsolePollTimer = null;
+
+async function openLiveConsoleModal(appName) {
+  activeConsoleAppName = appName;
+  if (!modalLiveConsole) return;
+  consoleModalAppName.textContent = appName;
+  liveConsolePre.textContent = 'Conectando con la salida estándar de Node.js...';
+  modalLiveConsole.classList.remove('hidden');
+
+  await refreshLiveConsoleLogs();
+  if (liveConsolePollTimer) clearInterval(liveConsolePollTimer);
+  liveConsolePollTimer = setInterval(refreshLiveConsoleLogs, 1500);
+}
+
+function closeLiveConsoleModal() {
+  if (liveConsolePollTimer) {
+    clearInterval(liveConsolePollTimer);
+    liveConsolePollTimer = null;
+  }
+  if (modalLiveConsole) modalLiveConsole.classList.add('hidden');
+}
+
+async function refreshLiveConsoleLogs() {
+  if (!activeConsoleAppName || modalLiveConsole.classList.contains('hidden')) return;
+  try {
+    const res = await fetch(`./api/v1/projects/${encodeURIComponent(activeConsoleAppName)}/logs`, {
+      headers: authHeaders()
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const stateLabel = data.nodeRuntimeActive
+      ? '<span style="color:var(--accent-mint);font-weight:800;">🟢 Proceso Node.js Activo</span>'
+      : `<span style="color:var(--amber);font-weight:800;">🟠 Estado: ${data.watchdogState || 'Inactivo'}</span>`;
+    consoleModalMeta.innerHTML = `${stateLabel} · Puerto: <strong>:${data.port || 3001}</strong> · Límite RAM: <strong>${data.maxRamMb || 256} MB</strong> · Reinicios Watchdog: <strong>${data.restartCount || 0}</strong>`;
+
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    const wasAtBottom = liveConsolePre.scrollHeight - liveConsolePre.scrollTop - liveConsolePre.clientHeight < 40;
+    liveConsolePre.textContent = lines.length > 0
+      ? lines.join('\n')
+      : 'Sin registros en consola todavía. Las llamadas console.log() y errores aparecerán aquí en vivo.';
+    if (wasAtBottom) {
+      liveConsolePre.scrollTop = liveConsolePre.scrollHeight;
+    }
+  } catch (_err) {}
+}
+
+if (btnConsoleRestartApp) {
+  btnConsoleRestartApp.addEventListener('click', async () => {
+    if (!activeConsoleAppName) return;
+    btnConsoleRestartApp.disabled = true;
+    btnConsoleRestartApp.textContent = '⏳ Reiniciando...';
+    try {
+      await fetch(`./api/v1/projects/${encodeURIComponent(activeConsoleAppName)}/restart`, {
+        method: 'POST',
+        headers: authHeaders()
+      });
+      await new Promise((r) => setTimeout(r, 600));
+      await refreshLiveConsoleLogs();
+      loadProjects();
+    } finally {
+      btnConsoleRestartApp.disabled = false;
+      btnConsoleRestartApp.textContent = '🔄 Reiniciar App';
+    }
+  });
+}
+
+if (btnConsoleClearLogs) {
+  btnConsoleClearLogs.addEventListener('click', async () => {
+    if (!activeConsoleAppName) return;
+    await fetch(`./api/v1/projects/${encodeURIComponent(activeConsoleAppName)}/logs/clear`, {
+      method: 'POST',
+      headers: authHeaders()
+    });
+    await refreshLiveConsoleLogs();
+  });
+}
+
+if (btnConsoleCopyLogs) {
+  btnConsoleCopyLogs.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(liveConsolePre.textContent || '');
+      btnConsoleCopyLogs.textContent = '✅ Copiado';
+      setTimeout(() => {
+        btnConsoleCopyLogs.textContent = '📋 Copiar';
+      }, 1500);
+    } catch (_e) {}
+  });
+}
+
+if (btnCloseConsoleModal) {
+  btnCloseConsoleModal.addEventListener('click', closeLiveConsoleModal);
+}
+
+// ============================================================================
+// 6.4 MODO EXPERTO (LÍMITES DE RAM POR APP, WATCHDOG Y BUFFER INNODB)
+// ============================================================================
+
+const expertModeSwitch = document.getElementById('expertModeSwitch');
+const expertModeBody = document.getElementById('expertModeBody');
+const expertDefaultRamSelect = document.getElementById('expertDefaultRamSelect');
+const expertInnoDbBufferSelect = document.getElementById('expertInnoDbBufferSelect');
+const expertWatchdogSwitch = document.getElementById('expertWatchdogSwitch');
+const expertWatchdogMaxRestarts = document.getElementById('expertWatchdogMaxRestarts');
+const expertSharedStoreInfo = document.getElementById('expertSharedStoreInfo');
+const btnSaveExpertConfig = document.getElementById('btnSaveExpertConfig');
+
+if (expertModeSwitch && expertModeBody) {
+  expertModeSwitch.addEventListener('change', () => {
+    if (expertModeSwitch.checked) {
+      expertModeBody.classList.remove('hidden');
+      fetchExpertConfig();
+    } else {
+      expertModeBody.classList.add('hidden');
+    }
+  });
+}
+
+async function fetchExpertConfig() {
+  if (!getToken()) return;
+  try {
+    const res = await fetch('./api/v1/runtime/expert-config', { headers: authHeaders() });
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (expertDefaultRamSelect && cfg.defaultMaxRamMb) {
+      expertDefaultRamSelect.value = String(cfg.defaultMaxRamMb);
+    }
+    if (expertInnoDbBufferSelect && cfg.innoDbBufferMb) {
+      expertInnoDbBufferSelect.value = String(cfg.innoDbBufferMb);
+    }
+    if (expertWatchdogSwitch && cfg.watchdogEnabled !== undefined) {
+      expertWatchdogSwitch.value = String(Boolean(cfg.watchdogEnabled));
+    }
+    if (expertWatchdogMaxRestarts && cfg.watchdogMaxRestarts) {
+      expertWatchdogMaxRestarts.value = String(cfg.watchdogMaxRestarts);
+    }
+    if (expertSharedStoreInfo) {
+      expertSharedStoreInfo.textContent = `📦 Paquetes en almacén compartido: ${cfg.sharedPackagesCount || 0}`;
+    }
+  } catch (_e) {}
+}
+
+if (btnSaveExpertConfig) {
+  btnSaveExpertConfig.addEventListener('click', async () => {
+    btnSaveExpertConfig.disabled = true;
+    btnSaveExpertConfig.textContent = '⏳ Aplicando ajustes de experto...';
+    try {
+      const appRamOverrides = {};
+      document.querySelectorAll('.expert-app-ram-input').forEach((sel) => {
+        const app = sel.dataset.app;
+        const val = Number(sel.value || 256);
+        if (app && val >= 64) appRamOverrides[app] = val;
+      });
+
+      const payload = {
+        defaultMaxRamMb: Number(expertDefaultRamSelect ? expertDefaultRamSelect.value : 256),
+        innoDbBufferMb: Number(expertInnoDbBufferSelect ? expertInnoDbBufferSelect.value : 32),
+        watchdogEnabled: expertWatchdogSwitch ? expertWatchdogSwitch.value === 'true' : true,
+        watchdogMaxRestarts: Number(expertWatchdogMaxRestarts ? expertWatchdogMaxRestarts.value : 5),
+        appRamOverrides
+      };
+
+      const res = await fetch('./api/v1/runtime/expert-config', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        loadProjects();
+        launchConfetti();
+        showResultModal({
+          type: 'success',
+          title: '¡Configuración Experta Aplicada!',
+          desc: `Límite de RAM por defecto: ${payload.defaultMaxRamMb} MB · Buffer InnoDB: ${payload.innoDbBufferMb} MB · Watchdog: ${payload.watchdogEnabled ? 'Activo' : 'Inactivo'}.`,
+          pill: '🧠 Tus procesos Node.js ya corren con los nuevos límites'
+        });
+      } else {
+        alert(data.error || 'No se pudo guardar la configuración experta');
+      }
+    } catch (_err) {
+      alert('Error de conexión guardando configuración experta');
+    } finally {
+      btnSaveExpertConfig.disabled = false;
+      btnSaveExpertConfig.textContent = '💾 Guardar Ajustes de Experto y Aplicar';
+    }
+  });
+}
+
+// ============================================================================
+// 7. MODO PC (PUENTE DBEAVER), BASES DE DATOS Y EXPORTAR/IMPORTAR .SQL
 // ============================================================================
 
 function renderBridgeStatus(rawPayload) {
@@ -966,13 +1594,124 @@ async function loadDatabases() {
     for (const db of data.databases) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><strong>${db.name}</strong></td>
+        <td><strong style="font-family:monospace;color:var(--accent-mint);">${db.name}</strong></td>
         <td>${db.isSystem ? 'Interna' : 'De tus Apps'}</td>
         <td>${db.tables && db.tables.length ? db.tables.join(', ') : '<em>Vacía</em>'}</td>
+        <td>
+          <button type="button" class="btn btn-secondary btn-small btn-row-export-sql" data-db="${db.name}" style="padding:0.3rem 0.65rem;min-height:34px;font-size:0.8rem;">
+            📥 Backup .SQL
+          </button>
+        </td>
       `;
       dbsTableBody.appendChild(tr);
     }
+
+    dbsTableBody.querySelectorAll('.btn-row-export-sql').forEach((btn) => {
+      btn.addEventListener('click', () => exportDatabaseToSqlFile(btn.dataset.db));
+    });
   } catch (_err) {}
+}
+
+const exportDbNameInput = document.getElementById('exportDbNameInput');
+const btnExportDbSql = document.getElementById('btnExportDbSql');
+const importDbNameInput = document.getElementById('importDbNameInput');
+const sqlFileInput = document.getElementById('sqlFileInput');
+const sqlFileDropzone = document.getElementById('sqlFileDropzone');
+const sqlFileChosenText = document.getElementById('sqlFileChosenText');
+const btnImportDbSql = document.getElementById('btnImportDbSql');
+
+async function exportDatabaseToSqlFile(dbName) {
+  const targetDb = (dbName || (exportDbNameInput ? exportDbNameInput.value : '') || 'cajitapaas').trim();
+  if (!targetDb) return;
+  if (btnExportDbSql) {
+    btnExportDbSql.disabled = true;
+    btnExportDbSql.textContent = `⏳ Generando backup de "${targetDb}"...`;
+  }
+  try {
+    const res = await fetch(`./api/v1/db/export?database=${encodeURIComponent(targetDb)}`, {
+      headers: authHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok || !data.sql) {
+      alert(data.error || `No se pudo exportar la base "${targetDb}".`);
+      return;
+    }
+    const blob = new Blob([data.sql], { type: 'application/sql;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = data.filename || `${targetDb}_backup.sql`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (_err) {
+    alert('Error de conexión al exportar la base de datos.');
+  } finally {
+    if (btnExportDbSql) {
+      btnExportDbSql.disabled = false;
+      btnExportDbSql.textContent = '📥 Descargar Backup (.SQL)';
+    }
+  }
+}
+
+if (btnExportDbSql) {
+  btnExportDbSql.addEventListener('click', () => {
+    exportDatabaseToSqlFile(exportDbNameInput ? exportDbNameInput.value : 'cajitapaas');
+  });
+}
+
+if (sqlFileDropzone && sqlFileInput) {
+  sqlFileDropzone.addEventListener('click', () => sqlFileInput.click());
+  sqlFileInput.addEventListener('change', () => {
+    const f = sqlFileInput.files && sqlFileInput.files[0];
+    if (f) {
+      sqlFileChosenText.textContent = `📄 Archivo listo: ${f.name}`;
+    } else {
+      sqlFileChosenText.textContent = '📄 Tocá para elegir tu archivo .SQL';
+    }
+  });
+}
+
+if (btnImportDbSql) {
+  btnImportDbSql.addEventListener('click', async () => {
+    const file = sqlFileInput && sqlFileInput.files && sqlFileInput.files[0];
+    if (!file) {
+      if (sqlFileInput) sqlFileInput.click();
+      return;
+    }
+    const targetDb = (importDbNameInput ? importDbNameInput.value.trim() : '') || 'cajitapaas';
+    btnImportDbSql.disabled = true;
+    btnImportDbSql.textContent = `⏳ Importando en "${targetDb}"...`;
+    try {
+      const sqlContent = await file.text();
+      const res = await fetch('./api/v1/db/import', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ database: targetDb, sql: sqlContent })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        sqlFileInput.value = '';
+        if (sqlFileChosenText) sqlFileChosenText.textContent = '📄 Tocá para elegir tu archivo .SQL';
+        loadDatabases();
+        launchConfetti();
+        showResultModal({
+          type: 'success',
+          title: `¡Archivo .SQL Importado en "${targetDb}"!`,
+          desc: data.message || 'Todas las tablas y registros del archivo fueron cargados en MariaDB.',
+          pill: '🗄️ Base de datos lista para tus aplicaciones'
+        });
+      } else {
+        alert(data.error || 'Error al importar el archivo .SQL');
+      }
+    } catch (_err) {
+      alert('Error leyendo o enviando el archivo .SQL');
+    } finally {
+      btnImportDbSql.disabled = false;
+      btnImportDbSql.textContent = '📤 Subir e Importar .SQL';
+    }
+  });
 }
 
 btnCreateDb.addEventListener('click', async () => {

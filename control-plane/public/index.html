@@ -943,6 +943,89 @@
             </div>
           </div>
         </div>
+
+        <!-- MODO EXPERTO: LÍMITE DE RAM POR APP, WATCHDOG Y MOTOR (OCULTO POR DEFECTO) -->
+        <div class="card" style="margin-top: 1.25rem; border-color: rgba(255, 179, 0, 0.4);">
+          <div class="switch-row" style="margin-bottom: 0;">
+            <div>
+              <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <strong style="font-size: 1.05rem;">🧠 Modo Experto: Límites de RAM por App y Auto-Reinicio</strong>
+                <span style="background: rgba(255, 179, 0, 0.18); color: var(--amber); padding: 0.12rem 0.5rem; border-radius: 6px; font-size: 0.72rem; font-weight: 800; border: 1px solid rgba(255, 179, 0, 0.4);">AVANZADO</span>
+              </div>
+              <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.15rem;">
+                Activá este interruptor si querés ajustar cuánta memoria RAM máxima puede usar cada proyecto, el Watchdog de reinicio automático o el buffer de MariaDB.
+              </div>
+            </div>
+            <label class="toggle-switch" title="Mostrar u ocultar opciones de experto">
+              <input type="checkbox" id="expertModeSwitch" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div id="expertModeBody" class="hidden" style="margin-top: 1.15rem; padding-top: 1.1rem; border-top: 1px solid var(--border);">
+            <div class="grid" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="expertDefaultRamSelect" style="margin-top: 0;">Límite de RAM por defecto por cada App (<code>--max-old-space-size</code>)</label>
+                <select id="expertDefaultRamSelect">
+                  <option value="128">128 MB (Celulares de poca RAM)</option>
+                  <option value="192">192 MB (Ligero)</option>
+                  <option value="256" selected>256 MB (Recomendado equilibrado)</option>
+                  <option value="384">384 MB (Proyectos medianos)</option>
+                  <option value="512">512 MB (Proyectos pesados)</option>
+                  <option value="768">768 MB (Alto consumo)</option>
+                  <option value="1024">1024 MB (1 GB máx. por App)</option>
+                </select>
+                <small style="color: var(--text-muted); font-size: 0.78rem; display: block; margin-top: 0.25rem;">
+                  Protege tu teléfono evitando que una app con fuga de memoria cuelgue Android.
+                </small>
+              </div>
+              <div>
+                <label for="expertInnoDbBufferSelect" style="margin-top: 0;">Buffer de Memoria MariaDB InnoDB</label>
+                <select id="expertInnoDbBufferSelect">
+                  <option value="16">16 MB (Ahorro máximo de batería/RAM)</option>
+                  <option value="32" selected>32 MB (Recomendado)</option>
+                  <option value="64">64 MB (Alto tráfico SQL)</option>
+                  <option value="128">128 MB (Bases de datos grandes)</option>
+                </select>
+                <small style="color: var(--text-muted); font-size: 0.78rem; display: block; margin-top: 0.25rem;">
+                  Caché en RAM para acelerar consultas de tablas InnoDB.
+                </small>
+              </div>
+            </div>
+
+            <div class="grid" style="margin-bottom: 0.75rem;">
+              <div>
+                <label for="expertWatchdogSwitch">Auto-Reinicio Inteligente (Watchdog estilo PM2)</label>
+                <select id="expertWatchdogSwitch">
+                  <option value="true" selected>🟢 Activado (Levanta la app sola si se cae)</option>
+                  <option value="false">⚪ Desactivado (No reiniciar si falla)</option>
+                </select>
+              </div>
+              <div>
+                <label for="expertWatchdogMaxRestarts">Máximo de reintentos seguidos antes de pausar</label>
+                <select id="expertWatchdogMaxRestarts">
+                  <option value="3">3 intentos seguidos</option>
+                  <option value="5" selected>5 intentos seguidos (Recomendado)</option>
+                  <option value="10">10 intentos seguidos</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="margin-top: 0.85rem;">
+              <label style="margin-bottom: 0.5rem;">🎯 Límite de RAM individual por cada App encendida (Opcional)</label>
+              <div id="expertPerAppRamList" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.85rem;">Cargando apps...</div>
+              </div>
+            </div>
+
+            <div style="margin-top: 1.2rem; display: flex; justify-content: flex-end; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+              <span id="expertSharedStoreInfo" style="font-size: 0.83rem; color: var(--text-muted); margin-right: auto;"></span>
+              <button id="btnSaveExpertConfig" type="button" class="btn btn-amber btn-small" style="min-height: 48px; padding: 0.65rem 1.35rem;">
+                💾 Guardar Ajustes de Experto y Aplicar
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- PESTAÑA 2: BASES DE DATOS Y PUENTE PARA PC (DBEAVER) -->
@@ -1028,12 +1111,47 @@
                   <th>Nombre</th>
                   <th>Tipo</th>
                   <th>Tablas creadas</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody id="dbsTableBody">
-                <tr><td colspan="3" style="color: var(--text-muted);">Cargando bases de datos...</td></tr>
+                <tr><td colspan="4" style="color: var(--text-muted);">Cargando bases de datos...</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- Exportar e Importar archivos .SQL desde el navegador -->
+        <div class="grid">
+          <div class="card" style="border-color: rgba(0, 229, 163, 0.45);">
+            <h3 class="card-title">📥 Descargar Backup (.SQL)</h3>
+            <p class="card-desc">
+              Descargá una copia completa de tu base de datos (tablas y datos) en un archivo <code>.sql</code> listo para guardar o restaurar cuando quieras.
+            </p>
+            <label for="exportDbNameInput">Base de Datos a respaldar</label>
+            <input type="text" id="exportDbNameInput" value="cajitapaas" placeholder="ej: cajitapaas, app_pruebas" />
+            <button id="btnExportDbSql" type="button" class="btn" style="margin-top: 1.1rem;">
+              📥 Descargar Backup (.SQL)
+            </button>
+          </div>
+
+          <div class="card" style="border-color: rgba(24, 144, 255, 0.45);">
+            <h3 class="card-title">📤 Importar Archivo (.SQL)</h3>
+            <p class="card-desc">
+              Subí un archivo <code>.sql</code> desde tu celular o PC para crear tablas e insertar datos sin necesidad de abrir DBeaver.
+            </p>
+            <label for="importDbNameInput">Base de Datos destino (se creará si no existe)</label>
+            <input type="text" id="importDbNameInput" value="cajitapaas" placeholder="ej: app_pruebas, cajitapaas" />
+
+            <input type="file" id="sqlFileInput" accept=".sql,text/plain,application/sql" class="hidden" />
+            <div id="sqlFileDropzone" class="zip-dropzone" role="button" tabindex="0" style="padding: 0.9rem; margin-top: 0.75rem; margin-bottom: 0.85rem;">
+              <div id="sqlFileChosenText" class="zip-dropzone-title" style="font-size: 0.95rem;">📄 Tocá para elegir tu archivo .SQL</div>
+              <div class="zip-dropzone-sub">Ejecuta CREATE TABLE, INSERTs y estructuras automáticamente</div>
+            </div>
+
+            <button id="btnImportDbSql" type="button" class="btn">
+              📤 Subir e Importar .SQL
+            </button>
           </div>
         </div>
 
@@ -1181,6 +1299,130 @@
       <button id="btnCloseModalResult" type="button" class="btn">
         🙌 ¡Genial, volver al panel!
       </button>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 1: AUTORIZACIÓN E INSTALACIÓN DE DEPENDENCIAS NPM (STORE COMPARTIDO)
+       ======================================================================== -->
+  <div id="modalDependencies" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-box" style="max-width: 650px; text-align: left; max-height: 90vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
+        <h2 class="modal-title" style="font-size: 1.35rem; margin-bottom: 0;">
+          📦 Dependencias de <span id="depModalAppName" style="color: var(--accent-mint);">mi-app</span>
+        </h2>
+        <button id="btnCloseDepModalTop" type="button" class="btn btn-secondary btn-small">✕ Cerrar</button>
+      </div>
+
+      <div id="depAuthWarningBox" class="error-banner hidden" style="background: var(--amber-bg); border-color: var(--amber); color: #ffe082;">
+        ⚠️ <strong>Autorización requerida:</strong> Este proyecto necesita descargar e instalar librerías adicionales desde NPM. Al autorizar, se guardarán en el almacén compartido de CajitaPaaS para no duplicar espacio.
+      </div>
+
+      <div id="depListContainer" style="margin: 0.85rem 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; padding: 0.65rem; background: var(--bg-input);">
+        <div style="color: var(--text-muted); font-size: 0.9rem;">Escaneando package.json...</div>
+      </div>
+
+      <div style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--border);">
+        <label for="inputExtraNpmPkg" style="margin-top: 0; font-size: 0.88rem;">➕ Instalar librería adicional de NPM (opcional)</label>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <input type="text" id="inputExtraNpmPkg" placeholder="ej: zod, dayjs, socket.io, nodemailer" style="flex: 1; min-width: 180px; min-height: 44px;" />
+          <button id="btnInstallSinglePkg" type="button" class="btn btn-secondary btn-small" style="min-height: 44px;">
+            ⬇️ Autorizar e Instalar Paquete
+          </button>
+        </div>
+      </div>
+
+      <div style="margin-top: 1.25rem; display: flex; gap: 0.65rem; justify-content: flex-end; flex-wrap: wrap;">
+        <button id="btnCancelDepModal" type="button" class="btn btn-secondary btn-small">
+          Cancelar / Más tarde
+        </button>
+        <button id="btnAuthorizeInstallDeps" type="button" class="btn btn-small" style="min-height: 46px; padding: 0.6rem 1.2rem;">
+          ✅ Autorizar e Instalar Dependencias Faltantes
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 2: EDITOR VISUAL DE VARIABLES DE ENTORNO (.ENV) EN CALIENTE
+       ======================================================================== -->
+  <div id="modalEnvEditor" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-box" style="max-width: 720px; text-align: left; max-height: 92vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+        <h2 class="modal-title" style="font-size: 1.35rem; margin-bottom: 0;">
+          ⚙️ Variables <code>.env</code> de <span id="envModalAppName" style="color: var(--accent-mint);">mi-app</span>
+        </h2>
+        <button id="btnCloseEnvModalTop" type="button" class="btn btn-secondary btn-small">✕ Cerrar</button>
+      </div>
+      <p id="envModalSubtitle" style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 0.9rem;">
+        Mostrando las variables actuales del archivo <code>.env</code> del proyecto. Al guardar, el servicio se reinicia en 1 segundo con los nuevos valores.
+      </p>
+
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.85rem;">
+        <button id="btnAddEnvRow" type="button" class="btn btn-secondary btn-small">
+          ➕ Agregar Variable
+        </button>
+        <button id="btnFillDefaultDbEnv" type="button" class="btn btn-secondary btn-small" style="border-color: rgba(0, 229, 163, 0.45); color: var(--accent-mint);">
+          ⚡ Cargar Datos de MariaDB Local
+        </button>
+        <button id="btnToggleRawEnvMode" type="button" class="btn btn-secondary btn-small" style="margin-left: auto;">
+          📝 Modo Texto .env
+        </button>
+      </div>
+
+      <!-- Vista de filas Clave = Valor -->
+      <div id="envRowsContainer" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 330px; overflow-y: auto; padding: 0.65rem; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-input);"></div>
+
+      <!-- Vista alternativa en modo texto crudo -->
+      <div id="envRawContainer" class="hidden" style="margin-top: 0.5rem;">
+        <textarea id="envRawTextarea" rows="10" placeholder="PORT=3001&#10;DB_HOST=127.0.0.1&#10;DB_NAME=cajitapaas" style="font-family: monospace; font-size: 0.9rem;"></textarea>
+      </div>
+
+      <div style="margin-top: 1.25rem; display: flex; gap: 0.65rem; justify-content: flex-end; flex-wrap: wrap;">
+        <button id="btnCancelEnvModal" type="button" class="btn btn-secondary btn-small">
+          Cancelar
+        </button>
+        <button id="btnSaveEnvModal" type="button" class="btn btn-small" style="min-height: 46px; padding: 0.6rem 1.3rem;">
+          💾 Guardar .env y Reiniciar App
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 3: CONSOLA DE LOGS EN TIEMPO REAL (CONSOLE.LOG / ERRORES / WATCHDOG)
+       ======================================================================== -->
+  <div id="modalLiveConsole" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-box" style="max-width: 780px; text-align: left; max-height: 92vh; display: flex; flex-direction: column;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.65rem;">
+        <div>
+          <h2 class="modal-title" style="font-size: 1.3rem; margin-bottom: 0.15rem;">
+            📜 Consola en Vivo · <span id="consoleModalAppName" style="color: var(--accent-mint);">mi-app</span>
+          </h2>
+          <div id="consoleModalMeta" style="font-size: 0.82rem; color: var(--text-muted);">
+            Estado: Conectando...
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.45rem; flex-wrap: wrap;">
+          <button id="btnConsoleRestartApp" type="button" class="btn btn-secondary btn-small" style="border-color: rgba(0, 229, 163, 0.45); color: var(--accent-mint);">
+            🔄 Reiniciar App
+          </button>
+          <button id="btnConsoleClearLogs" type="button" class="btn btn-secondary btn-small">
+            🧹 Limpiar
+          </button>
+          <button id="btnConsoleCopyLogs" type="button" class="btn btn-secondary btn-small">
+            📋 Copiar
+          </button>
+          <button id="btnCloseConsoleModal" type="button" class="btn btn-secondary btn-small">
+            ✕ Cerrar
+          </button>
+        </div>
+      </div>
+
+      <pre
+        id="liveConsolePre"
+        style="background: #05080c; color: #d6e8f5; border: 1px solid var(--border); border-radius: 12px; padding: 0.9rem; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.84rem; line-height: 1.45; height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;"
+      >Cargando salida de consola...</pre>
     </div>
   </div>
 

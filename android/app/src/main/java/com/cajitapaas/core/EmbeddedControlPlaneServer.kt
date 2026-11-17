@@ -46,6 +46,15 @@ class EmbeddedControlPlaneServer(
         private const val TAG = "CPSHttpServer"
         private const val PREF_PROJECTS_KEY = "deployed_projects_v2_json"
         const val GATEWAY_PORT = 8080
+        private const val MAX_LOG_LINES_PER_APP = 300
+        private val BUILTIN_NODE_MODULES = setOf(
+            "assert", "async_hooks", "buffer", "child_process", "cluster", "console",
+            "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain",
+            "events", "fs", "http", "http2", "https", "inspector", "module", "net",
+            "os", "path", "perf_hooks", "process", "punycode", "querystring", "readline",
+            "repl", "stream", "string_decoder", "sys", "timers", "tls", "trace_events",
+            "tty", "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib"
+        )
     }
 
     @Volatile
@@ -55,7 +64,37 @@ class EmbeddedControlPlaneServer(
     private val appServerSockets = ConcurrentHashMap<String, ServerSocket>()
     private val appProcesses = ConcurrentHashMap<String, Process>()
     private val appNodeLogs = ConcurrentHashMap<String, String>()
+    private val appLogLines = ConcurrentHashMap<String, ArrayDeque<String>>()
+    private val intentionallyStoppedApps = ConcurrentHashMap.newKeySet<String>()
+    private val appRestartCounts = ConcurrentHashMap<String, Int>()
+    private val appWatchdogState = ConcurrentHashMap<String, String>()
     private val executor = Executors.newCachedThreadPool()
+
+    private fun getDefaultMaxRamMb(): Int {
+        return prefs.getInt("expert_default_max_ram_mb", 256).coerceIn(64, 2048)
+    }
+
+    private fun isWatchdogEnabled(): Boolean {
+        return prefs.getBoolean("expert_watchdog_enabled", true)
+    }
+
+    private fun getWatchdogMaxRestarts(): Int {
+        return prefs.getInt("expert_watchdog_max_restarts", 5).coerceIn(1, 20)
+    }
+
+    private fun appendAppLog(appName: String, rawLine: String) {
+        val clean = rawLine.trimEnd()
+        if (clean.isEmpty()) return
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        val formatted = if (clean.startsWith("[")) clean else "[$ts] $clean"
+        val deque = appLogLines.getOrPut(appName) { ArrayDeque(MAX_LOG_LINES_PER_APP) }
+        synchronized(deque) {
+            if (deque.size >= MAX_LOG_LINES_PER_APP) deque.removeFirst()
+            deque.addLast(formatted)
+            val tail = if (deque.size <= 25) deque.toList() else deque.toList().takeLast(25)
+            appNodeLogs[appName] = tail.joinToString("\n")
+        }
+    }
 
     private val prefs by lazy {
         context.getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE)
@@ -161,6 +200,9 @@ class EmbeddedControlPlaneServer(
      */
     private fun startDedicatedAppServer(appName: String, appPort: Int) {
         stopDedicatedAppServer(appName)
+        intentionallyStoppedApps.remove(appName)
+        appRestartCounts[appName] = 0
+        appWatchdogState[appName] = "running"
         executor.execute {
             runCatching { startAppNodeProcessIfPresent(appName, appPort) }
         }
@@ -182,6 +224,8 @@ class EmbeddedControlPlaneServer(
     }
 
     private fun stopDedicatedAppServer(appName: String) {
+        intentionallyStoppedApps.add(appName)
+        appWatchdogState[appName] = "stopped"
         appServerSockets.remove(appName)?.let { sock ->
             runCatching { sock.close() }
         }
@@ -192,7 +236,8 @@ class EmbeddedControlPlaneServer(
 
     /**
      * Detecta si el directorio desplegado de `appName` contiene una aplicación Node.js
-     * y la ejecuta en segundo plano redirigiendo su puerto interno a `appPort + 10000` (ej. 13001).
+     * y la ejecuta en segundo plano redirigiendo su puerto interno a `appPort + 10000` (ej. 13001),
+     * aplicando límite de RAM (`--max-old-space-size`), almacén compartido de dependencias y Watchdog.
      */
     @Synchronized
     private fun startAppNodeProcessIfPresent(appName: String, appPort: Int) {
@@ -220,7 +265,8 @@ class EmbeddedControlPlaneServer(
 
         val libSearchPath = dbEngine.getLibSearchPath()
         val globalNodeModules = dbEngine.getNodeGlobalModulesPath()
-        ensureNodeModulesLinked(appRoot, globalNodeModules)
+        val sharedNodeModules = dbEngine.getSharedNodeModulesPath()
+        ensureNodeModulesLinked(appRoot, globalNodeModules, sharedNodeModules)
 
         val preloadFile = File(context.filesDir, "cps_node_preload.cjs")
         preloadFile.writeText(
@@ -246,23 +292,26 @@ class EmbeddedControlPlaneServer(
               console.error('[CPS-UncaughtException]', err);
             });
 
-            const globalModPath = process.env.CPS_GLOBAL_NODE_MODULES || '';
+            const extraModPaths = [
+              process.env.CPS_SHARED_NODE_MODULES || '',
+              process.env.CPS_GLOBAL_NODE_MODULES || ''
+            ].filter(Boolean);
 
-            if (globalModPath) {
-              if (Array.isArray(Module.globalPaths) && !Module.globalPaths.includes(globalModPath)) {
-                Module.globalPaths.push(globalModPath);
+            for (const modDir of extraModPaths) {
+              if (Array.isArray(Module.globalPaths) && !Module.globalPaths.includes(modDir)) {
+                Module.globalPaths.push(modDir);
               }
-              const parentGlobal = path.dirname(globalModPath);
-              if (Array.isArray(Module.globalPaths) && !Module.globalPaths.includes(parentGlobal)) {
-                Module.globalPaths.push(parentGlobal);
+              const parentDir = path.dirname(modDir);
+              if (Array.isArray(Module.globalPaths) && !Module.globalPaths.includes(parentDir)) {
+                Module.globalPaths.push(parentDir);
               }
             }
 
             const origNodeModulePaths = Module._nodeModulePaths;
             Module._nodeModulePaths = function(from) {
               const paths = origNodeModulePaths.call(this, from) || [];
-              if (globalModPath && !paths.includes(globalModPath)) {
-                paths.push(globalModPath);
+              for (const modDir of extraModPaths) {
+                if (!paths.includes(modDir)) paths.push(modDir);
               }
               return paths;
             };
@@ -270,8 +319,8 @@ class EmbeddedControlPlaneServer(
             const origResolveLookupPaths = Module._resolveLookupPaths;
             Module._resolveLookupPaths = function(request, parent) {
               const paths = origResolveLookupPaths.call(this, request, parent) || [];
-              if (globalModPath && !paths.includes(globalModPath)) {
-                paths.push(globalModPath);
+              for (const modDir of extraModPaths) {
+                if (!paths.includes(modDir)) paths.push(modDir);
               }
               return paths;
             };
@@ -281,28 +330,30 @@ class EmbeddedControlPlaneServer(
               try {
                 return origResolveFilename.call(this, request, parent, isMain, options);
               } catch (err) {
-                if (globalModPath && !request.startsWith('.') && !request.startsWith('/')) {
-                  const candidateDir = path.join(globalModPath, request);
-                  if (fs.existsSync(candidateDir)) {
-                    const candidatePkg = path.join(candidateDir, 'package.json');
-                    if (fs.existsSync(candidatePkg)) {
-                      try {
-                        const pkg = JSON.parse(fs.readFileSync(candidatePkg, 'utf8'));
-                        const mainFile = pkg.main || 'index.js';
-                        const resolvedMain = path.resolve(candidateDir, mainFile);
-                        if (fs.existsSync(resolvedMain)) {
-                          return resolvedMain;
-                        }
-                      } catch (_pe) {}
+                if (!request.startsWith('.') && !request.startsWith('/')) {
+                  for (const modDir of extraModPaths) {
+                    const candidateDir = path.join(modDir, request);
+                    if (fs.existsSync(candidateDir)) {
+                      const candidatePkg = path.join(candidateDir, 'package.json');
+                      if (fs.existsSync(candidatePkg)) {
+                        try {
+                          const pkg = JSON.parse(fs.readFileSync(candidatePkg, 'utf8'));
+                          const mainFile = pkg.main || 'index.js';
+                          const resolvedMain = path.resolve(candidateDir, mainFile);
+                          if (fs.existsSync(resolvedMain)) {
+                            return resolvedMain;
+                          }
+                        } catch (_pe) {}
+                      }
+                      const candidateIndex = path.join(candidateDir, 'index.js');
+                      if (fs.existsSync(candidateIndex)) {
+                        return candidateIndex;
+                      }
                     }
-                    const candidateIndex = path.join(candidateDir, 'index.js');
-                    if (fs.existsSync(candidateIndex)) {
-                      return candidateIndex;
+                    const candidateJs = candidateDir + '.js';
+                    if (fs.existsSync(candidateJs)) {
+                      return candidateJs;
                     }
-                  }
-                  const candidateJs = candidateDir + '.js';
-                  if (fs.existsSync(candidateJs)) {
-                    return candidateJs;
                   }
                 }
                 throw err;
@@ -369,12 +420,17 @@ class EmbeddedControlPlaneServer(
             """.trimIndent()
         )
 
+        val projects = loadSavedProjects()
+        val appConfig = projects.optJSONObject(appName)
+        val appMaxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb()).coerceIn(64, 2048)
+
         val localNodeModules = File(appRoot, "node_modules").absolutePath
         val args = listOf(
             muslLinker.absolutePath,
             "--library-path",
             libSearchPath,
             nodeBin.absolutePath,
+            "--max-old-space-size=$appMaxRamMb",
             "--dns-result-order=ipv4first",
             "--require",
             preloadFile.absolutePath,
@@ -404,16 +460,17 @@ class EmbeddedControlPlaneServer(
 
         env["PORT"] = internalNodePort.toString()
         env["CPS_INTERNAL_PORT"] = internalNodePort.toString()
+        env["CPS_APP_NAME"] = appName
+        env["CPS_MAX_RAM_MB"] = appMaxRamMb.toString()
         env["CPS_GLOBAL_NODE_MODULES"] = globalNodeModules
+        env["CPS_SHARED_NODE_MODULES"] = sharedNodeModules
         env["HOST"] = "127.0.0.1"
-        env["NODE_ENV"] = "production"
-        env["NODE_PATH"] = "$localNodeModules:$globalNodeModules"
+        env["NODE_ENV"] = env["NODE_ENV"]?.takeIf { it.isNotBlank() } ?: "production"
+        env["NODE_PATH"] = "$localNodeModules:$sharedNodeModules:$globalNodeModules"
         env["LD_LIBRARY_PATH"] = libSearchPath
         env["HOME"] = appRoot.absolutePath
         env["TMPDIR"] = context.cacheDir.absolutePath
 
-        val projects = loadSavedProjects()
-        val appConfig = projects.optJSONObject(appName)
         val projectDb = appConfig?.optString("dbName")?.takeIf { it.isNotBlank() }
             ?: appConfig?.optString("database")?.takeIf { it.isNotBlank() }
 
@@ -425,10 +482,13 @@ class EmbeddedControlPlaneServer(
             ?: env["DATABASE_NAME"]?.takeIf { it.isNotBlank() }
 
         val effectiveDb = envDb ?: projectDb ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+        if (effectiveDb != EmbeddedDatabaseEngine.DEFAULT_DB_NAME) {
+            runCatching { dbEngine.createDatabase(effectiveDb, null, null) }
+        }
 
         if (env["DB_HOST"].isNullOrBlank() || env["DB_HOST"] == "localhost") env["DB_HOST"] = "127.0.0.1"
         if (env["DB_PORT"].isNullOrBlank()) env["DB_PORT"] = "3306"
-        if (env["DB_USER"].isNullOrBlank()) env["DB_USER"] = dbEngine.getDbUser()
+        if (env["DB_USER"].isNullOrBlank() || env["DB_USER"] == "root") env["DB_USER"] = dbEngine.getDbUser()
         if (env["DB_PASS"].isNullOrBlank()) env["DB_PASS"] = dbEngine.getDbPassword()
         if (env["DB_PASSWORD"].isNullOrBlank()) env["DB_PASSWORD"] = dbEngine.getDbPassword()
 
@@ -439,9 +499,11 @@ class EmbeddedControlPlaneServer(
         env["DATABASE_NAME"] = effectiveDb
 
         appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
-        val logBuffer = ArrayDeque<String>(30)
+        val startTimestamp = System.currentTimeMillis()
         val proc = pb.start()
         appProcesses[appName] = proc
+        appWatchdogState[appName] = "running"
+        appendAppLog(appName, "[CPS-Runtime] 🚀 Iniciando '${entryScript.name}' (Puerto :$appPort -> Interno :$internalNodePort · RAM máx: ${appMaxRamMb}MB · BD: '$effectiveDb')")
         Log.i(TAG, "Proceso Node.js iniciado para '$appName' (${entryScript.absolutePath}) en puerto interno $internalNodePort")
 
         thread(name = "CPS-NodeLog-$appName", isDaemon = true) {
@@ -449,28 +511,75 @@ class EmbeddedControlPlaneServer(
                 proc.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
                         if (line.isNotBlank()) {
-                            synchronized(logBuffer) {
-                                if (logBuffer.size >= 25) logBuffer.removeFirst()
-                                logBuffer.addLast(line)
-                                appNodeLogs[appName] = logBuffer.joinToString("\n")
-                            }
+                            appendAppLog(appName, line)
                         }
                         Log.i(TAG, "[Node:$appName] $line")
                     }
+                }
+            }
+            val exitCode = runCatching { proc.waitFor() }.getOrDefault(-1)
+            if (isRunning && !intentionallyStoppedApps.contains(appName) && appProcesses[appName] === proc) {
+                val uptimeMs = System.currentTimeMillis() - startTimestamp
+                if (uptimeMs > 60_000L) {
+                    appRestartCounts[appName] = 0
+                }
+                if (isWatchdogEnabled()) {
+                    val crashes = (appRestartCounts[appName] ?: 0) + 1
+                    appRestartCounts[appName] = crashes
+                    val maxRestarts = getWatchdogMaxRestarts()
+                    if (crashes <= maxRestarts) {
+                        val backoffSec = minOf(25, crashes * 3)
+                        appWatchdogState[appName] = "restarting ($crashes/$maxRestarts)"
+                        appendAppLog(appName, "[CPS-Watchdog] ⚠️ Proceso terminado inesperadamente (código $exitCode). Auto-reiniciando en ${backoffSec}s (intento $crashes/$maxRestarts)...")
+                        runCatching { Thread.sleep(backoffSec * 1000L) }
+                        if (isRunning && !intentionallyStoppedApps.contains(appName)) {
+                            runCatching { startAppNodeProcessIfPresent(appName, appPort) }
+                        }
+                    } else {
+                        appWatchdogState[appName] = "crash_loop"
+                        appendAppLog(appName, "[CPS-Watchdog] 🛑 Auto-reinicio pausado tras $maxRestarts fallos consecutivos. Revisá la consola o instalá las dependencias faltantes.")
+                    }
+                } else {
+                    appWatchdogState[appName] = "exited ($exitCode)"
+                    appendAppLog(appName, "[CPS-Runtime] Proceso finalizado (código $exitCode). Watchdog desactivado.")
                 }
             }
         }
     }
 
     /**
-     * Crea enlaces simbólicos de `node_modules` tanto en los directorios padre (`filesDir`, `deployed_apps`)
-     * como en `appRoot/node_modules` para que tanto CommonJS (`require`) como ES Modules (`import`)
-     * encuentren todos los paquetes preinstalados (`express`, `mysql2`, `cors`, `dotenv`, etc.).
+     * Unifica en el almacén compartido (`sharedNodeModulesPath`) los enlaces simbólicos de los
+     * paquetes incluidos de fábrica (`globalNodeModulesPath`) junto con los paquetes instalados
+     * bajo demanda por el usuario, y enlaza `appRoot/node_modules` hacia este almacén común.
      */
-    private fun ensureNodeModulesLinked(appRoot: File, globalNodeModulesPath: String) {
+    private fun ensureNodeModulesLinked(appRoot: File, globalNodeModulesPath: String, sharedNodeModulesPath: String) {
         val globalDir = File(globalNodeModulesPath)
+        val sharedDir = File(sharedNodeModulesPath).apply { mkdirs() }
         if (!globalDir.exists()) return
 
+        // 1. Asegurar que todos los paquetes de fábrica estén enlazados dentro del almacén compartido
+        runCatching {
+            val globalPkgs = globalDir.listFiles() ?: emptyArray()
+            for (pkg in globalPkgs) {
+                if (pkg.name.startsWith("@") && pkg.isDirectory) {
+                    val scopeDir = File(sharedDir, pkg.name).apply { mkdirs() }
+                    val scopedChildren = pkg.listFiles() ?: emptyArray()
+                    for (sub in scopedChildren) {
+                        val destSub = File(scopeDir, sub.name)
+                        if (!destSub.exists()) {
+                            runCatching { Os.symlink(sub.absolutePath, destSub.absolutePath) }
+                        }
+                    }
+                } else {
+                    val destPkg = File(sharedDir, pkg.name)
+                    if (!destPkg.exists()) {
+                        runCatching { Os.symlink(pkg.absolutePath, destPkg.absolutePath) }
+                    }
+                }
+            }
+        }
+
+        // 2. Enlazar node_modules en los directorios padre hacia sharedDir
         for (parentDir in listOf(context.filesDir, deployedAppsBaseDir)) {
             val link = File(parentDir, "node_modules")
             runCatching {
@@ -478,39 +587,28 @@ class EmbeddedControlPlaneServer(
                     java.nio.file.Files.deleteIfExists(link.toPath())
                 }
                 if (!link.exists()) {
-                    Os.symlink(globalDir.absolutePath, link.absolutePath)
+                    Os.symlink(sharedDir.absolutePath, link.absolutePath)
                 }
             }
         }
 
+        // 3. Enlazar appRoot/node_modules hacia sharedDir (o completar paquetes faltantes si tiene carpeta propia)
         val appNodeModules = File(appRoot, "node_modules")
         runCatching {
             if (java.nio.file.Files.isSymbolicLink(appNodeModules.toPath())) {
                 val target = runCatching { java.nio.file.Files.readSymbolicLink(appNodeModules.toPath()) }.getOrNull()
-                if (target == null || target.toString() != globalDir.absolutePath || !appNodeModules.exists()) {
+                if (target == null || target.toString() != sharedDir.absolutePath || !appNodeModules.exists()) {
                     java.nio.file.Files.deleteIfExists(appNodeModules.toPath())
-                    Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
+                    Os.symlink(sharedDir.absolutePath, appNodeModules.absolutePath)
                 }
             } else if (!appNodeModules.exists()) {
-                Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
+                Os.symlink(sharedDir.absolutePath, appNodeModules.absolutePath)
             } else if (appNodeModules.isDirectory) {
-                val localExpress = File(appNodeModules, "express")
-                val localMariadb = File(appNodeModules, "mariadb")
-                if (!localExpress.exists() && !localMariadb.exists()) {
-                    appNodeModules.deleteRecursively()
-                    Os.symlink(globalDir.absolutePath, appNodeModules.absolutePath)
-                } else {
-                    val globalPkgs = globalDir.listFiles() ?: emptyArray()
-                    for (pkg in globalPkgs) {
-                        val targetPkg = File(appNodeModules, pkg.name)
-                        if (java.nio.file.Files.isSymbolicLink(targetPkg.toPath())) {
-                            if (!targetPkg.exists()) {
-                                java.nio.file.Files.deleteIfExists(targetPkg.toPath())
-                                Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
-                            }
-                        } else if (!targetPkg.exists()) {
-                            Os.symlink(pkg.absolutePath, targetPkg.absolutePath)
-                        }
+                val sharedPkgs = sharedDir.listFiles() ?: emptyArray()
+                for (pkg in sharedPkgs) {
+                    val targetPkg = File(appNodeModules, pkg.name)
+                    if (!targetPkg.exists()) {
+                        runCatching { Os.symlink(pkg.absolutePath, targetPkg.absolutePath) }
                     }
                 }
             }
@@ -798,12 +896,15 @@ class EmbeddedControlPlaneServer(
             path.startsWith("/api/v1/projects/") ||
             path.startsWith("/api/v1/db/") ||
             path.startsWith("/api/v1/tunnel/") ||
-            path.startsWith("/api/v1/network/")
+            path.startsWith("/api/v1/network/") ||
+            path.startsWith("/api/v1/runtime/")
     }
 
     private fun sendAppStatusJson(appName: String, appPort: Int, out: OutputStream) {
         val internalNodePort = appPort + 10000
         val nodeActive = isLocalPortOpen(internalNodePort, 150)
+        val appConfig = loadSavedProjects().optJSONObject(appName)
+        val maxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb())
         val json = JSONObject()
             .put("status", "online")
             .put("healthy", true)
@@ -814,6 +915,9 @@ class EmbeddedControlPlaneServer(
             .put("dbHost", "127.0.0.1")
             .put("dbPort", EmbeddedDatabaseEngine.STANDARD_PORT)
             .put("nodeRuntimeActive", nodeActive)
+            .put("maxRamMb", maxRamMb)
+            .put("restartCount", appRestartCounts[appName] ?: 0)
+            .put("watchdogState", appWatchdogState[appName] ?: if (nodeActive) "running" else "idle")
             .put("lastLog", appNodeLogs[appName] ?: "Servicio listo")
             .put("message", "API '$appName' activa y operativa en CajitaPaaS (Puerto :$appPort)")
         sendJson(out, 200, json.toString())
@@ -1236,7 +1340,7 @@ class EmbeddedControlPlaneServer(
     }
 
     private fun readRequestBodyAsString(input: InputStream, contentLength: Long): String {
-        val safeLen = contentLength.coerceAtMost(2L * 1024L * 1024L).toInt()
+        val safeLen = contentLength.coerceAtMost(15L * 1024L * 1024L).toInt()
         val buf = ByteArray(safeLen)
         var readTotal = 0
         while (readTotal < safeLen) {
@@ -1582,16 +1686,35 @@ class EmbeddedControlPlaneServer(
                 val appPort = info.optInt("activePort", 3001)
                 val cleanRoute = info.optString("routePath", "/").removeSuffix("*")
 
-                // Si es Frontend o Monolítico (Fullstack), su URL principal es el puerto 8080 (y 80 con Root).
-                // Si es Backend API, se expone en su puerto exclusivo (:3001, :3003...) y también en :8080/api/
                 val primaryUrl = if (appRole == "frontend" || appRole == "fullstack") {
                     "http://$lanIp:$GATEWAY_PORT$cleanRoute"
                 } else {
                     "http://$lanIp:$appPort"
                 }
+                val appMaxRamMb = (info.optInt("maxRamMb", 0).takeIf { it >= 64 } ?: getDefaultMaxRamMb())
+                val internalNodePort = appPort + 10000
+                val nodeAlive = isLocalPortOpen(internalNodePort, 100) || (appProcesses[appName]?.isAlive == true)
+
+                // Si la app tiene un .env con DB_NAME y info no lo tenía aún, reflejarlo
+                val envMap = readEnvMapFromAppName(appName)
+                val envDb = envMap["DB_NAME"]?.takeIf { it.isNotBlank() }
+                    ?: envMap["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+                    ?: envMap["DATABASE"]?.takeIf { it.isNotBlank() }
+                if (!envDb.isNullOrBlank() && info.optString("dbName").isNullOrBlank()) {
+                    info.put("dbName", envDb)
+                }
+
+                val depReport = if (appRole != "frontend") inspectAppDependencies(appName) else null
+                val missingArr = depReport?.optJSONArray("missing") ?: JSONArray()
+
                 info.put("appUrl", primaryUrl)
                 info.put("directPortUrl", "http://$lanIp:$appPort")
                 info.put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT$cleanRoute")
+                info.put("maxRamMb", appMaxRamMb)
+                info.put("restartCount", appRestartCounts[appName] ?: 0)
+                info.put("watchdogState", appWatchdogState[appName] ?: if (nodeAlive) "running" else "idle")
+                info.put("nodeRuntimeActive", nodeAlive)
+                info.put("missingDependencies", missingArr)
                 activeSlots.put(appName, info)
 
                 val color = info.optString("activeColor", "blue")
@@ -1601,6 +1724,7 @@ class EmbeddedControlPlaneServer(
                         .put("pid", info.optInt("pid", 4100))
                         .put("status", "online")
                         .put("memoryMb", info.optInt("memoryMb", 42))
+                        .put("maxRamMb", appMaxRamMb)
                 )
             }
 
@@ -1612,24 +1736,121 @@ class EmbeddedControlPlaneServer(
                     .put("pm2Processes", pm2)
                     .put("lanIp", lanIp)
                     .put("gatewayPort", GATEWAY_PORT)
+                    .put("defaultMaxRamMb", getDefaultMaxRamMb())
                     .toString()
             )
         }
 
-        if (path.startsWith("/api/v1/projects/") && method == "DELETE") {
-            val rawName = path.removePrefix("/api/v1/projects/").trim()
+        // Consola de Logs en Vivo por App
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/logs") && method == "GET") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/logs").trim('/')
             val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
-            stopDedicatedAppServer(appName)
-            File(deployedAppsBaseDir, appName).deleteRecursively()
-
             val projectsObj = loadSavedProjects()
-            projectsObj.remove(appName)
-            saveProjects(projectsObj)
+            val appInfo = projectsObj.optJSONObject(appName)
+            val appPort = appInfo?.optInt("activePort", 3001) ?: 3001
+            val internalNodePort = appPort + 10000
+            val nodeActive = isLocalPortOpen(internalNodePort, 120) || (appProcesses[appName]?.isAlive == true)
+            val maxRamMb = (appInfo?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb())
+
+            val linesArr = JSONArray()
+            val deque = appLogLines[appName]
+            if (deque != null) {
+                synchronized(deque) {
+                    for (line in deque) {
+                        linesArr.put(line)
+                    }
+                }
+            }
             return sendJson(
                 out,
                 200,
-                JSONObject().put("message", "Proyecto '$appName' eliminado correctamente.").toString()
+                JSONObject()
+                    .put("appName", appName)
+                    .put("port", appPort)
+                    .put("nodeRuntimeActive", nodeActive)
+                    .put("maxRamMb", maxRamMb)
+                    .put("restartCount", appRestartCounts[appName] ?: 0)
+                    .put("watchdogState", appWatchdogState[appName] ?: if (nodeActive) "running" else "idle")
+                    .put("lines", linesArr)
+                    .toString()
             )
+        }
+
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/logs/clear") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/logs/clear").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            appLogLines[appName]?.let { deque ->
+                synchronized(deque) { deque.clear() }
+            }
+            appNodeLogs.remove(appName)
+            appendAppLog(appName, "[CPS-Console] 🧹 Consola limpiada por el usuario.")
+            return sendJson(out, 200, JSONObject().put("status", "success").toString())
+        }
+
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/restart") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/restart").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val projectsObj = loadSavedProjects()
+            val appInfo = projectsObj.optJSONObject(appName)
+                ?: return sendJson(out, 404, JSONObject().put("error", "Proyecto no encontrado").toString())
+            val appPort = appInfo.optInt("activePort", 3001)
+            appRestartCounts[appName] = 0
+            appendAppLog(appName, "[CPS-Control] 🔄 Reinicio manual solicitado por el usuario...")
+            startDedicatedAppServer(appName, appPort)
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put("status", "success")
+                    .put("message", "Servicio '$appName' reiniciado correctamente.")
+                    .toString()
+            )
+        }
+
+        // Editor Visual de Variables de Entorno (.env) por App
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/env") && method == "GET") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/env").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            return sendJson(out, 200, getAppEnvJson(appName).toString())
+        }
+
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/env") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/env").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            return try {
+                val res = saveAppEnvJson(appName, json)
+                sendJson(out, 200, res.toString())
+            } catch (e: Exception) {
+                sendJson(out, 400, JSONObject().put("error", e.message ?: "Error guardando variables .env").toString())
+            }
+        }
+
+        // Escaneo e Instalación Autorizada de Dependencias NPM
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/dependencies") && method == "GET") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/dependencies").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            return sendJson(out, 200, inspectAppDependencies(appName).toString())
+        }
+
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/dependencies/install") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/dependencies/install").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val customPkgs = mutableListOf<String>()
+            val arr = json.optJSONArray("packages")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val p = arr.optString(i, "").trim()
+                    if (p.isNotEmpty()) customPkgs.add(p)
+                }
+            }
+            return try {
+                val result = installNpmPackagesToSharedStore(appName, customPkgs.takeIf { it.isNotEmpty() })
+                sendJson(out, 200, result.toString())
+            } catch (e: Exception) {
+                sendJson(out, 400, JSONObject().put("error", e.message ?: "Error instalando dependencias").toString())
+            }
         }
 
         if (path.startsWith("/api/v1/projects/") && path.endsWith("/database") && method == "POST") {
@@ -1640,10 +1861,13 @@ class EmbeddedControlPlaneServer(
             val projectsObj = loadSavedProjects()
             val appInfo = projectsObj.optJSONObject(appName)
             if (appInfo != null && newDb.isNotEmpty()) {
+                runCatching { dbEngine.createDatabase(newDb, null, null) }
                 appInfo.put("dbName", newDb)
                 projectsObj.put(appName, appInfo)
                 saveProjects(projectsObj)
+                syncDbNameToAppEnvFile(appName, newDb)
                 val port = appInfo.optInt("activePort", 3001)
+                appendAppLog(appName, "[CPS-DB] 🗄️ Base de datos cambiada en caliente a '$newDb'. Reiniciando proceso...")
                 startDedicatedAppServer(appName, port)
                 return sendJson(
                     out,
@@ -1656,6 +1880,89 @@ class EmbeddedControlPlaneServer(
                 )
             }
             return sendJson(out, 400, JSONObject().put("error", "No se encontró el servicio o nombre de base inválido").toString())
+        }
+
+        if (path.startsWith("/api/v1/projects/") && method == "DELETE") {
+            val rawName = path.removePrefix("/api/v1/projects/").trim()
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            stopDedicatedAppServer(appName)
+            File(deployedAppsBaseDir, appName).deleteRecursively()
+            appLogLines.remove(appName)
+            appNodeLogs.remove(appName)
+            appRestartCounts.remove(appName)
+            appWatchdogState.remove(appName)
+
+            val projectsObj = loadSavedProjects()
+            projectsObj.remove(appName)
+            saveProjects(projectsObj)
+            return sendJson(
+                out,
+                200,
+                JSONObject().put("message", "Proyecto '$appName' eliminado correctamente.").toString()
+            )
+        }
+
+        // Configuración de Modo Experto (Límite de RAM por App, Watchdog, Buffer InnoDB)
+        if (path == "/api/v1/runtime/expert-config" && method == "GET") {
+            return sendJson(out, 200, buildExpertConfigJson().toString())
+        }
+
+        if (path == "/api/v1/runtime/expert-config" && method == "POST") {
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val defaultMaxRamMb = json.optInt("defaultMaxRamMb", getDefaultMaxRamMb()).coerceIn(64, 2048)
+            val watchdogEnabled = json.optBoolean("watchdogEnabled", isWatchdogEnabled())
+            val watchdogMaxRestarts = json.optInt("watchdogMaxRestarts", getWatchdogMaxRestarts()).coerceIn(1, 20)
+            val innoDbBufferMb = json.optInt("innoDbBufferMb", dbEngine.getInnoDbBufferPoolMb()).coerceIn(16, 512)
+
+            prefs.edit()
+                .putInt("expert_default_max_ram_mb", defaultMaxRamMb)
+                .putBoolean("expert_watchdog_enabled", watchdogEnabled)
+                .putInt("expert_watchdog_max_restarts", watchdogMaxRestarts)
+                .apply()
+
+            // Actualizar overrides de RAM por app si fueron enviados
+            val overridesObj = json.optJSONObject("appRamOverrides")
+            val projectsObj = loadSavedProjects()
+            if (overridesObj != null) {
+                val k = overridesObj.keys()
+                while (k.hasNext()) {
+                    val appName = k.next()
+                    val ramVal = overridesObj.optInt(appName, 0)
+                    val appInfo = projectsObj.optJSONObject(appName) ?: continue
+                    if (ramVal >= 64) {
+                        appInfo.put("maxRamMb", ramVal.coerceIn(64, 2048))
+                    } else {
+                        appInfo.remove("maxRamMb")
+                    }
+                    projectsObj.put(appName, appInfo)
+                }
+                saveProjects(projectsObj)
+            }
+
+            executor.execute {
+                runCatching { dbEngine.applyInnoDbBufferPoolSize(innoDbBufferMb) }
+                // Reiniciar procesos Node activos para aplicar el nuevo --max-old-space-size
+                val keys = projectsObj.keys()
+                while (keys.hasNext()) {
+                    val appName = keys.next()
+                    val info = projectsObj.optJSONObject(appName) ?: continue
+                    val p = info.optInt("activePort", 3001)
+                    if (appProcesses.containsKey(appName)) {
+                        appRestartCounts[appName] = 0
+                        startAppNodeProcessIfPresent(appName, p)
+                    }
+                }
+            }
+
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put("status", "success")
+                    .put("message", "Configuración de Modo Experto guardada y aplicada a los servicios.")
+                    .put("expertConfig", buildExpertConfigJson())
+                    .toString()
+            )
         }
 
         if ((path == "/api/deploy/zip" || path == "/api/v1/deploy/zip" || path == "/api/v1/deploy/git") && method == "POST") {
@@ -1722,8 +2029,14 @@ class EmbeddedControlPlaneServer(
                 )
             }
 
-            // Levantar el servidor HTTP real en el puerto asignado (ej. :3001)
-            startDedicatedAppServer(appName, candidatePort)
+            // Si el usuario especificó dbName en el formulario de subida, sincronizarlo con el .env del proyecto
+            if (dbName.isNotEmpty()) {
+                syncDbNameToAppEnvFile(appName, dbName)
+            }
+            val envVarsFromZip = readEnvMapFromAppName(appName)
+            val envDetectedDb = envVarsFromZip["DB_NAME"]?.takeIf { it.isNotBlank() }
+                ?: envVarsFromZip["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+                ?: envVarsFromZip["DATABASE"]?.takeIf { it.isNotBlank() }
 
             val lanIp = getDeviceLanIp()
             val cleanRoute = routePath.removeSuffix("*")
@@ -1744,7 +2057,15 @@ class EmbeddedControlPlaneServer(
                 .put("pid", 4200 + (projectsObj.length() * 17))
                 .put("memoryMb", if (appRole == "frontend") 38 else 54)
 
-            val effectiveAppDb = if (dbName.isNotEmpty()) dbName else (existing?.optString("dbName") ?: "")
+            if (existing?.has("maxRamMb") == true) {
+                slotInfo.put("maxRamMb", existing.optInt("maxRamMb"))
+            }
+
+            val effectiveAppDb = when {
+                dbName.isNotEmpty() -> dbName
+                !envDetectedDb.isNullOrBlank() -> envDetectedDb
+                else -> existing?.optString("dbName") ?: ""
+            }
             if (effectiveAppDb.isNotEmpty()) {
                 slotInfo.put("dbName", effectiveAppDb)
             }
@@ -1752,13 +2073,34 @@ class EmbeddedControlPlaneServer(
             projectsObj.put(appName, slotInfo)
             saveProjects(projectsObj)
 
+            // Escanear dependencias del package.json antes de arrancar para avisar al usuario si faltan paquetes
+            val depReport = inspectAppDependencies(appName)
+            val missingArr = depReport.optJSONArray("missing") ?: JSONArray()
+            if (missingArr.length() > 0) {
+                val missingNames = (0 until missingArr.length()).mapNotNull {
+                    missingArr.optJSONObject(it)?.optString("name")
+                }
+                appendAppLog(
+                    appName,
+                    "[CPS-Dependencies] ⚠️ Se detectaron ${missingNames.size} dependencias pendientes de autorización: ${missingNames.joinToString(", ")}"
+                )
+            }
+
+            // Levantar el servidor HTTP real en el puerto asignado (ej. :3001)
+            startDedicatedAppServer(appName, candidatePort)
+
+            val deployPayload = JSONObject(slotInfo.toString())
+                .put("appName", appName)
+                .put("missingDependencies", missingArr)
+                .put("dependencyReport", depReport)
+
             return sendJson(
                 out,
                 200,
                 JSONObject()
                     .put("status", "success")
                     .put("message", "¡Sistema actualizado con éxito!")
-                    .put("deployment", JSONObject(slotInfo.toString()).put("appName", appName))
+                    .put("deployment", deployPayload)
                     .toString()
             )
         }
@@ -1856,6 +2198,33 @@ class EmbeddedControlPlaneServer(
                 sendJson(out, 200, res.toString())
             } catch (e: Exception) {
                 sendJson(out, 400, JSONObject().put("error", e.message ?: "Error en consulta SQL").toString())
+            }
+        }
+
+        if (path == "/api/v1/db/export" && method == "GET") {
+            val database = queryParams["database"]?.takeIf { it.isNotBlank() }
+                ?: queryParams["db"]?.takeIf { it.isNotBlank() }
+                ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+            return try {
+                val res = dbEngine.exportDatabaseSql(database)
+                sendJson(out, 200, res.toString())
+            } catch (e: Exception) {
+                sendJson(out, 400, JSONObject().put("error", e.message ?: "Error exportando base de datos").toString())
+            }
+        }
+
+        if (path == "/api/v1/db/import" && method == "POST") {
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val database = json.optString("database", queryParams["database"] ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME).trim()
+            val sql = json.optString("sql", "").trim()
+            if (sql.isEmpty()) {
+                return sendJson(out, 400, JSONObject().put("error", "El contenido del archivo .SQL está vacío.").toString())
+            }
+            return try {
+                val res = dbEngine.importDatabaseSql(database, sql)
+                sendJson(out, 200, res.toString())
+            } catch (e: Exception) {
+                sendJson(out, 400, JSONObject().put("error", e.message ?: "Error importando archivo SQL").toString())
             }
         }
 
@@ -2056,6 +2425,618 @@ class EmbeddedControlPlaneServer(
             candidates.maxByOrNull { it.first }?.second ?: "127.0.0.1"
         } catch (e: Exception) {
             "127.0.0.1"
+        }
+    }
+
+    // ========================================================================
+    // GESTIÓN DE ARCHIVOS .ENV EN CALIENTE POR APLICACIÓN
+    // ========================================================================
+
+    private fun findExistingEnvFile(appRoot: File): File? {
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: appRoot
+        val candidates = listOf(
+            File(appRoot, ".env"),
+            File(entryDir, ".env"),
+            File(appRoot, ".env.production"),
+            File(appRoot, ".env.local"),
+            File(appRoot, ".env.example")
+        )
+        return candidates.firstOrNull { it.exists() && it.isFile }
+    }
+
+    private fun readEnvMapFromAppName(appName: String): LinkedHashMap<String, String> {
+        val map = LinkedHashMap<String, String>()
+        val baseDir = File(deployedAppsBaseDir, appName)
+        if (!baseDir.exists()) return map
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val envFile = findExistingEnvFile(appRoot) ?: return map
+        runCatching {
+            envFile.readLines(Charsets.UTF_8).forEach { rawLine ->
+                val trimmed = rawLine.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                    val k = trimmed.substringBefore("=").trim()
+                    val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                    if (k.isNotEmpty()) map[k] = v
+                }
+            }
+        }
+        return map
+    }
+
+    private fun syncDbNameToAppEnvFile(appName: String, newDbName: String) {
+        val baseDir = File(deployedAppsBaseDir, appName)
+        if (!baseDir.exists()) return
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: appRoot
+        val primaryEnv = File(appRoot, ".env")
+        val existingFile = findExistingEnvFile(appRoot)
+
+        val currentMap = readEnvMapFromAppName(appName)
+        if (currentMap.isEmpty() && existingFile == null) {
+            return
+        }
+        currentMap["DB_NAME"] = newDbName
+        if (currentMap.containsKey("DB_DATABASE")) currentMap["DB_DATABASE"] = newDbName
+        if (currentMap.containsKey("DATABASE")) currentMap["DATABASE"] = newDbName
+        if (currentMap.containsKey("MYSQL_DATABASE")) currentMap["MYSQL_DATABASE"] = newDbName
+
+        val content = currentMap.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n"
+        runCatching { primaryEnv.writeText(content, Charsets.UTF_8) }
+        if (entryDir.canonicalPath != appRoot.canonicalPath) {
+            runCatching { File(entryDir, ".env").writeText(content, Charsets.UTF_8) }
+        }
+    }
+
+    private fun getAppEnvJson(appName: String): JSONObject {
+        val baseDir = File(deployedAppsBaseDir, appName)
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val projects = loadSavedProjects()
+        val appInfo = projects.optJSONObject(appName)
+        val appPort = appInfo?.optInt("activePort", 3001) ?: 3001
+        val savedDb = appInfo?.optString("dbName")?.takeIf { it.isNotBlank() } ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+
+        val envFile = findExistingEnvFile(appRoot)
+        val hasEnvFile = envFile != null && envFile.exists()
+        val rawMap = readEnvMapFromAppName(appName)
+
+        val effectiveDb = rawMap["DB_NAME"]?.takeIf { it.isNotBlank() }
+            ?: rawMap["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: rawMap["DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: savedDb
+
+        val defaultsObj = JSONObject()
+            .put("PORT", appPort.toString())
+            .put("DB_HOST", "127.0.0.1")
+            .put("DB_PORT", "3306")
+            .put("DB_USER", dbEngine.getDbUser())
+            .put("DB_PASSWORD", dbEngine.getDbPassword())
+            .put("DB_NAME", effectiveDb)
+            .put("NODE_ENV", "production")
+
+        val variablesArr = JSONArray()
+        if (rawMap.isNotEmpty()) {
+            for ((k, v) in rawMap) {
+                variablesArr.put(JSONObject().put("key", k).put("value", v))
+            }
+        } else {
+            // Si el proyecto no traía .env o estaba vacío, mostrar las variables activas por defecto
+            val defaultKeys = listOf("PORT", "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME", "NODE_ENV")
+            for (k in defaultKeys) {
+                variablesArr.put(JSONObject().put("key", k).put("value", defaultsObj.optString(k, "")))
+            }
+        }
+
+        val rawText = if (hasEnvFile) {
+            runCatching { envFile!!.readText(Charsets.UTF_8) }.getOrDefault("")
+        } else {
+            (0 until variablesArr.length()).joinToString("\n") { idx ->
+                val item = variablesArr.getJSONObject(idx)
+                "${item.optString("key")}=${item.optString("value")}"
+            }
+        }
+
+        return JSONObject()
+            .put("appName", appName)
+            .put("hasEnvFile", hasEnvFile)
+            .put("envFileName", envFile?.name ?: ".env")
+            .put("variables", variablesArr)
+            .put("rawContent", rawText)
+            .put("injectedDefaults", defaultsObj)
+    }
+
+    private fun saveAppEnvJson(appName: String, payload: JSONObject): JSONObject {
+        val baseDir = File(deployedAppsBaseDir, appName)
+        if (!baseDir.exists()) {
+            throw IllegalStateException("El directorio del proyecto '$appName' no existe.")
+        }
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: appRoot
+
+        val finalMap = LinkedHashMap<String, String>()
+        val varsArr = payload.optJSONArray("variables")
+        if (varsArr != null) {
+            for (i in 0 until varsArr.length()) {
+                val obj = varsArr.optJSONObject(i) ?: continue
+                val k = obj.optString("key", "").trim().replace(Regex("[^a-zA-Z0-9_]"), "")
+                val v = obj.optString("value", "").trim()
+                if (k.isNotEmpty()) {
+                    finalMap[k] = v
+                }
+            }
+        } else if (payload.has("rawContent")) {
+            val raw = payload.optString("rawContent", "")
+            raw.lines().forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                    val k = trimmed.substringBefore("=").trim()
+                    val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                    if (k.isNotEmpty()) finalMap[k] = v
+                }
+            }
+        }
+
+        val content = finalMap.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n"
+        File(appRoot, ".env").writeText(content, Charsets.UTF_8)
+        if (entryDir.canonicalPath != appRoot.canonicalPath) {
+            runCatching { File(entryDir, ".env").writeText(content, Charsets.UTF_8) }
+        }
+
+        // Sincronizar DB_NAME con la configuración del proyecto y crear la BD si no existía
+        val newDb = finalMap["DB_NAME"]?.takeIf { it.isNotBlank() }
+            ?: finalMap["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: finalMap["DATABASE"]?.takeIf { it.isNotBlank() }
+
+        val projectsObj = loadSavedProjects()
+        val appInfo = projectsObj.optJSONObject(appName)
+        val appPort = appInfo?.optInt("activePort", 3001) ?: 3001
+        if (appInfo != null && !newDb.isNullOrBlank()) {
+            runCatching { dbEngine.createDatabase(newDb, null, null) }
+            appInfo.put("dbName", newDb)
+            projectsObj.put(appName, appInfo)
+            saveProjects(projectsObj)
+        }
+
+        appRestartCounts[appName] = 0
+        appendAppLog(appName, "[CPS-Env] ⚙️ Archivo .env actualizado (${finalMap.size} variables). Reiniciando servicio...")
+        startDedicatedAppServer(appName, appPort)
+
+        return JSONObject()
+            .put("status", "success")
+            .put("message", "Variables .env guardadas y servicio '$appName' reiniciado.")
+            .put("env", getAppEnvJson(appName))
+    }
+
+    private fun buildExpertConfigJson(): JSONObject {
+        val projectsObj = loadSavedProjects()
+        val overrides = JSONObject()
+        val keys = projectsObj.keys()
+        while (keys.hasNext()) {
+            val appName = keys.next()
+            val info = projectsObj.optJSONObject(appName) ?: continue
+            val customRam = info.optInt("maxRamMb", 0)
+            overrides.put(appName, if (customRam >= 64) customRam else getDefaultMaxRamMb())
+        }
+
+        val sharedDir = File(dbEngine.getSharedNodeModulesPath())
+        val sharedPkgs = sharedDir.listFiles()?.count { it.isDirectory && !it.name.startsWith(".") } ?: 0
+
+        return JSONObject()
+            .put("defaultMaxRamMb", getDefaultMaxRamMb())
+            .put("watchdogEnabled", isWatchdogEnabled())
+            .put("watchdogMaxRestarts", getWatchdogMaxRestarts())
+            .put("innoDbBufferMb", dbEngine.getInnoDbBufferPoolMb())
+            .put("sharedPackagesCount", sharedPkgs)
+            .put("appRamOverrides", overrides)
+    }
+
+    // ========================================================================
+    // ESCÁNER E INSTALADOR DE DEPENDENCIAS NPM CON AUTORIZACIÓN DEL USUARIO
+    // ========================================================================
+
+    private fun isModuleInstalledInDir(dir: File, pkgName: String): Boolean {
+        val target = File(dir, pkgName)
+        return target.exists() && target.isDirectory && File(target, "package.json").exists()
+    }
+
+    private fun inspectAppDependencies(appName: String): JSONObject {
+        val baseDir = File(deployedAppsBaseDir, appName)
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val pkgFile = File(appRoot, "package.json")
+
+        val globalDir = File(dbEngine.getNodeGlobalModulesPath())
+        val sharedDir = File(dbEngine.getSharedNodeModulesPath())
+        val localDir = File(appRoot, "node_modules")
+
+        val allDepsArr = JSONArray()
+        val missingArr = JSONArray()
+
+        if (pkgFile.exists() && pkgFile.isFile) {
+            runCatching {
+                val pkgJson = JSONObject(pkgFile.readText(Charsets.UTF_8))
+                val depsObj = pkgJson.optJSONObject("dependencies") ?: JSONObject()
+                val depKeys = depsObj.keys()
+                while (depKeys.hasNext()) {
+                    val rawName = depKeys.next().trim()
+                    val verSpec = depsObj.optString(rawName, "latest").trim()
+                    if (rawName.isEmpty()) continue
+
+                    val cleanCore = rawName.removePrefix("node:")
+                    val status = when {
+                        BUILTIN_NODE_MODULES.contains(cleanCore) -> "builtin"
+                        rawName == "bcrypt" && isModuleInstalledInDir(globalDir, "bcryptjs") -> "preinstalled"
+                        isModuleInstalledInDir(globalDir, rawName) -> "preinstalled"
+                        isModuleInstalledInDir(sharedDir, rawName) -> "shared"
+                        !java.nio.file.Files.isSymbolicLink(localDir.toPath()) && isModuleInstalledInDir(localDir, rawName) -> "local"
+                        else -> "missing"
+                    }
+
+                    val item = JSONObject()
+                        .put("name", rawName)
+                        .put("version", verSpec)
+                        .put("status", status)
+                    allDepsArr.put(item)
+
+                    if (status == "missing") {
+                        missingArr.put(item)
+                    }
+                }
+            }
+        }
+
+        return JSONObject()
+            .put("appName", appName)
+            .put("hasPackageJson", pkgFile.exists())
+            .put("dependencies", allDepsArr)
+            .put("missing", missingArr)
+    }
+
+    private fun installNpmPackagesToSharedStore(appName: String, requestedPackages: List<String>?): JSONObject {
+        val baseDir = File(deployedAppsBaseDir, appName)
+        val appRoot = resolveEffectiveAppRoot(baseDir)
+        val globalDir = File(dbEngine.getNodeGlobalModulesPath())
+        val sharedDir = File(dbEngine.getSharedNodeModulesPath()).apply { mkdirs() }
+
+        val queue = ArrayDeque<Pair<String, String>>()
+
+        if (!requestedPackages.isNullOrEmpty()) {
+            val pkgFile = File(appRoot, "package.json")
+            val pkgDeps = if (pkgFile.exists()) {
+                runCatching { JSONObject(pkgFile.readText(Charsets.UTF_8)).optJSONObject("dependencies") }.getOrNull()
+            } else null
+
+            for (rawSpec in requestedPackages) {
+                val trimmed = rawSpec.trim()
+                if (trimmed.isEmpty()) continue
+                if (trimmed.startsWith("@") && trimmed.substring(1).contains("@")) {
+                    val namePart = "@" + trimmed.substring(1).substringBefore("@")
+                    val verPart = trimmed.substring(1).substringAfter("@", "latest")
+                    queue.addLast(namePart to verPart)
+                } else if (!trimmed.startsWith("@") && trimmed.contains("@")) {
+                    val namePart = trimmed.substringBefore("@")
+                    val verPart = trimmed.substringAfter("@", "latest")
+                    queue.addLast(namePart to verPart)
+                } else {
+                    val verFromPkg = pkgDeps?.optString(trimmed, "latest") ?: "latest"
+                    queue.addLast(trimmed to verFromPkg)
+                }
+            }
+        } else {
+            val report = inspectAppDependencies(appName)
+            val missing = report.optJSONArray("missing") ?: JSONArray()
+            for (i in 0 until missing.length()) {
+                val item = missing.optJSONObject(i) ?: continue
+                val n = item.optString("name", "").trim()
+                val v = item.optString("version", "latest").trim()
+                if (n.isNotEmpty()) queue.addLast(n to v)
+            }
+        }
+
+        if (queue.isEmpty()) {
+            return JSONObject()
+                .put("status", "success")
+                .put("installed", JSONArray())
+                .put("message", "Todas las dependencias de '$appName' ya están instaladas.")
+                .put("dependencyReport", inspectAppDependencies(appName))
+        }
+
+        val visited = mutableSetOf<String>()
+        val installedList = JSONArray()
+        val failedList = JSONArray()
+
+        appendAppLog(appName, "[CPS-NPM] 📦 Iniciando instalación autorizada de dependencias en almacén compartido...")
+
+        while (queue.isNotEmpty() && visited.size < 100) {
+            val (pkgName, verSpec) = queue.removeFirst()
+            val cleanCore = pkgName.removePrefix("node:").trim()
+            if (cleanCore.isEmpty() || visited.contains(pkgName) || BUILTIN_NODE_MODULES.contains(cleanCore)) {
+                continue
+            }
+            if (pkgName == "bcrypt" && isModuleInstalledInDir(globalDir, "bcryptjs")) {
+                visited.add(pkgName)
+                continue
+            }
+            if (isModuleInstalledInDir(globalDir, pkgName) || isModuleInstalledInDir(sharedDir, pkgName)) {
+                visited.add(pkgName)
+                // Si ya estaba en sharedDir, revisar igualmente sus sub-dependencias por si faltaba alguna
+                val existingPkgJson = File(sharedDir, "$pkgName/package.json")
+                if (existingPkgJson.exists()) {
+                    runCatching {
+                        val subDeps = JSONObject(existingPkgJson.readText(Charsets.UTF_8)).optJSONObject("dependencies")
+                        if (subDeps != null) {
+                            val k = subDeps.keys()
+                            while (k.hasNext()) {
+                                val depName = k.next()
+                                if (!visited.contains(depName) && !isModuleInstalledInDir(globalDir, depName) && !isModuleInstalledInDir(sharedDir, depName)) {
+                                    queue.addLast(depName to subDeps.optString(depName, "latest"))
+                                }
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+
+            visited.add(pkgName)
+
+            try {
+                appendAppLog(appName, "[CPS-NPM] ⬇️ Descargando '$pkgName' ($verSpec) desde registry.npmjs.org...")
+                val encodedPkg = if (pkgName.startsWith("@")) {
+                    "@" + java.net.URLEncoder.encode(pkgName.substring(1), "UTF-8").replace("+", "%20")
+                } else {
+                    java.net.URLEncoder.encode(pkgName, "UTF-8").replace("+", "%20")
+                }
+                val metaUrl = "https://registry.npmjs.org/$encodedPkg"
+                val conn = (java.net.URL(metaUrl).openConnection() as java.net.HttpURLConnection).apply {
+                    connectTimeout = 12_000
+                    readTimeout = 20_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("Accept", "application/vnd.npm.install-v1+json, application/json")
+                    setRequestProperty("User-Agent", "CajitaPaaS-NPM-Installer/1.0 (Android ARM64)")
+                }
+
+                val metaText = try {
+                    if (conn.responseCode !in 200..299) {
+                        throw IllegalStateException("HTTP ${conn.responseCode} al consultar paquete '$pkgName'")
+                    }
+                    conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                } finally {
+                    conn.disconnect()
+                }
+
+                val metaJson = JSONObject(metaText)
+                val versionsObj = metaJson.optJSONObject("versions")
+                    ?: throw IllegalStateException("Metadatos sin versiones para '$pkgName'")
+                val latestVer = metaJson.optJSONObject("dist-tags")?.optString("latest", "") ?: ""
+                val resolvedVer = resolveBestNpmVersion(versionsObj, latestVer, verSpec)
+                val verObj = versionsObj.optJSONObject(resolvedVer)
+                    ?: throw IllegalStateException("No se pudo resolver versión '$verSpec' para '$pkgName'")
+
+                val tarballUrl = verObj.optJSONObject("dist")?.optString("tarball", "") ?: ""
+                if (tarballUrl.isEmpty()) {
+                    throw IllegalStateException("Sin URL tarball para '$pkgName@$resolvedVer'")
+                }
+
+                val destDir = File(sharedDir, pkgName)
+                extractNpmTarballTgz(tarballUrl, destDir)
+
+                installedList.put("$pkgName@$resolvedVer")
+                appendAppLog(appName, "[CPS-NPM] ✅ Instalado: $pkgName@$resolvedVer")
+
+                val subDeps = verObj.optJSONObject("dependencies")
+                if (subDeps != null) {
+                    val k = subDeps.keys()
+                    while (k.hasNext()) {
+                        val depName = k.next()
+                        val depVer = subDeps.optString(depName, "latest")
+                        if (!visited.contains(depName) &&
+                            !isModuleInstalledInDir(globalDir, depName) &&
+                            !isModuleInstalledInDir(sharedDir, depName)
+                        ) {
+                            queue.addLast(depName to depVer)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error instalando paquete NPM '$pkgName': ${e.message}")
+                failedList.put("$pkgName (${e.message ?: "error"})")
+                appendAppLog(appName, "[CPS-NPM] ❌ No se pudo instalar '$pkgName': ${e.message}")
+            }
+        }
+
+        ensureNodeModulesLinked(appRoot, globalDir.absolutePath, sharedDir.absolutePath)
+
+        val projectsObj = loadSavedProjects()
+        val appPort = projectsObj.optJSONObject(appName)?.optInt("activePort", 3001) ?: 3001
+        appRestartCounts[appName] = 0
+        appendAppLog(appName, "[CPS-NPM] 🔄 Instalación finalizada (${installedList.length()} paquetes). Reiniciando '$appName'...")
+        startDedicatedAppServer(appName, appPort)
+
+        return JSONObject()
+            .put("status", if (failedList.length() == 0) "success" else "partial")
+            .put("installed", installedList)
+            .put("failed", failedList)
+            .put("message", "Se instalaron ${installedList.length()} paquetes en el almacén compartido y se reinició '$appName'.")
+            .put("dependencyReport", inspectAppDependencies(appName))
+    }
+
+    private fun resolveBestNpmVersion(versionsObj: JSONObject, latestVer: String, verSpec: String): String {
+        val raw = verSpec.trim()
+        if (raw.isEmpty() || raw == "*" || raw.equals("latest", ignoreCase = true)) {
+            if (latestVer.isNotEmpty() && versionsObj.has(latestVer)) return latestVer
+        }
+        val cleaned = raw.replace(Regex("^[~^>=<v\\s]+"), "").substringBefore(" ").trim()
+        if (cleaned.isNotEmpty() && versionsObj.has(cleaned)) {
+            return cleaned
+        }
+
+        val majorPrefix = cleaned.substringBefore(".")
+        val minorPrefix = cleaned.split(".").take(2).joinToString(".")
+        val allVersions = mutableListOf<String>()
+        val k = versionsObj.keys()
+        while (k.hasNext()) {
+            val v = k.next()
+            if (!v.contains("-")) allVersions.add(v)
+        }
+
+        if (raw.startsWith("~") && minorPrefix.contains(".")) {
+            val matchingMinor = allVersions.filter { it.startsWith("$minorPrefix.") }
+            if (matchingMinor.isNotEmpty()) {
+                return matchingMinor.maxWithOrNull(::compareSemver) ?: matchingMinor.last()
+            }
+        }
+
+        if (majorPrefix.isNotEmpty() && majorPrefix.all { it.isDigit() }) {
+            val matchingMajor = allVersions.filter { it == majorPrefix || it.startsWith("$majorPrefix.") }
+            if (matchingMajor.isNotEmpty()) {
+                return matchingMajor.maxWithOrNull(::compareSemver) ?: matchingMajor.last()
+            }
+        }
+
+        if (latestVer.isNotEmpty() && versionsObj.has(latestVer)) return latestVer
+        return allVersions.lastOrNull() ?: versionsObj.keys().next()
+    }
+
+    private fun compareSemver(a: String, b: String): Int {
+        val pa = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val pb = b.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(pa.size, pb.size)) {
+            val va = pa.getOrElse(i) { 0 }
+            val vb = pb.getOrElse(i) { 0 }
+            if (va != vb) return va.compareTo(vb)
+        }
+        return 0
+    }
+
+    private fun extractNpmTarballTgz(tarballUrl: String, destPkgDir: File) {
+        val conn = (java.net.URL(tarballUrl).openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "CajitaPaaS-NPM-Installer/1.0 (Android ARM64)")
+        }
+        try {
+            if (conn.responseCode !in 200..299) {
+                throw IllegalStateException("HTTP ${conn.responseCode} descargando tarball")
+            }
+            if (destPkgDir.exists()) destPkgDir.deleteRecursively()
+            destPkgDir.mkdirs()
+
+            java.util.zip.GZIPInputStream(BufferedInputStream(conn.inputStream, 32 * 1024)).use { gis ->
+                val header = ByteArray(512)
+                var pendingLongName: String? = null
+                val copyBuf = ByteArray(16 * 1024)
+
+                while (true) {
+                    var readHeader = 0
+                    while (readHeader < 512) {
+                        val r = gis.read(header, readHeader, 512 - readHeader)
+                        if (r <= 0) break
+                        readHeader += r
+                    }
+                    if (readHeader < 512) break
+                    if (header.all { it == 0.toByte() }) break
+
+                    val rawName = readTarString(header, 0, 100)
+                    val prefix = readTarString(header, 345, 155)
+                    val sizeOctal = readTarString(header, 124, 12).trim()
+                    val fileSize = sizeOctal.toLongOrNull(8) ?: 0L
+                    val typeFlag = header[156].toInt().toChar()
+
+                    val fullEntryName = when {
+                        !pendingLongName.isNullOrBlank() -> {
+                            val n = pendingLongName!!
+                            pendingLongName = null
+                            n
+                        }
+                        prefix.isNotEmpty() -> "$prefix/$rawName"
+                        else -> rawName
+                    }.replace('\\', '/').trimStart('/')
+
+                    if (typeFlag == 'L') {
+                        val nameBytes = readExactTarPayload(gis, fileSize)
+                        pendingLongName = String(nameBytes, Charsets.UTF_8).trimEnd('\u0000', '\r', '\n')
+                        continue
+                    } else if (typeFlag == 'x' || typeFlag == 'g') {
+                        val paxBytes = readExactTarPayload(gis, fileSize)
+                        val paxStr = String(paxBytes, Charsets.UTF_8)
+                        for (line in paxStr.lines()) {
+                            val idx = line.indexOf(" path=")
+                            if (idx > 0) {
+                                pendingLongName = line.substring(idx + 6).trim()
+                            }
+                        }
+                        continue
+                    }
+
+                    val relPath = if (fullEntryName.contains('/')) {
+                        fullEntryName.substringAfter('/')
+                    } else {
+                        ""
+                    }
+
+                    if (typeFlag == '5' || fullEntryName.endsWith("/")) {
+                        if (relPath.isNotEmpty()) {
+                            val dir = File(destPkgDir, relPath)
+                            if (dir.canonicalPath.startsWith(destPkgDir.canonicalPath)) {
+                                dir.mkdirs()
+                            }
+                        }
+                        val pad = ((512L - (fileSize % 512L)) % 512L)
+                        skipExactBytes(gis, fileSize + pad)
+                    } else if (typeFlag == '0' || typeFlag == '\u0000') {
+                        val outFile = if (relPath.isNotEmpty()) File(destPkgDir, relPath) else null
+                        if (outFile != null && outFile.canonicalPath.startsWith(destPkgDir.canonicalPath)) {
+                            outFile.parentFile?.mkdirs()
+                            FileOutputStream(outFile).use { fos ->
+                                var remaining = fileSize
+                                while (remaining > 0L) {
+                                    val toRead = minOf(copyBuf.size.toLong(), remaining).toInt()
+                                    val r = gis.read(copyBuf, 0, toRead)
+                                    if (r <= 0) break
+                                    fos.write(copyBuf, 0, r)
+                                    remaining -= r
+                                }
+                            }
+                        } else {
+                            skipExactBytes(gis, fileSize)
+                        }
+                        val pad = ((512L - (fileSize % 512L)) % 512L)
+                        skipExactBytes(gis, pad)
+                    } else {
+                        val pad = ((512L - (fileSize % 512L)) % 512L)
+                        skipExactBytes(gis, fileSize + pad)
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun readTarString(buf: ByteArray, offset: Int, length: Int): String {
+        var end = offset
+        val limit = (offset + length).coerceAtMost(buf.size)
+        while (end < limit && buf[end] != 0.toByte()) {
+            end++
+        }
+        return String(buf, offset, end - offset, Charsets.UTF_8)
+    }
+
+    private fun readExactTarPayload(input: InputStream, fileSize: Long): ByteArray {
+        val safeLen = fileSize.coerceIn(0L, 2L * 1024L * 1024L).toInt()
+        val data = readFixedBytes(input, safeLen)
+        val pad = ((512L - (fileSize % 512L)) % 512L)
+        skipExactBytes(input, pad)
+        return data
+    }
+
+    private fun skipExactBytes(input: InputStream, bytesToSkip: Long) {
+        var remaining = bytesToSkip
+        val discard = ByteArray(4096)
+        while (remaining > 0L) {
+            val r = input.read(discard, 0, minOf(discard.size.toLong(), remaining).toInt())
+            if (r <= 0) break
+            remaining -= r
         }
     }
 }
