@@ -116,3 +116,4 @@ zip -r -9 -q "$ASSETS_DIR/dotnet_alpine_bundle.zip" .
 
 ls -lh "$ASSETS_DIR/dotnet_alpine_bundle.zip"
 wc -l "$STAGE_DIR/dotnet_so_map.txt"
+
