@@ -46,7 +46,7 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         private const val BUNDLE_ASSET_NAME = "mariadb_alpine_bundle.zip"
         private const val BUNDLE_VERSION_MARKER = ".alpine_mariadb_v6_ready"
         private const val DOTNET_BUNDLE_ASSET_NAME = "dotnet_alpine_bundle.zip"
-        private const val DOTNET_VERSION_MARKER = ".alpine_dotnet8_v1_ready"
+        private const val DOTNET_VERSION_MARKER = ".alpine_dotnet10_v1_ready"
     }
 
     private val prefs by lazy {

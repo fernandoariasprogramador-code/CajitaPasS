@@ -845,7 +845,7 @@ class EmbeddedControlPlaneServer(
         val proc = pb.start()
         appProcesses[appName] = proc
         appWatchdogState[appName] = "running"
-        appendAppLog(appName, "[CPS-DotNet] 🚀 Iniciando '${dllFile.name}' (.NET 8 · Puerto :$appPort -> Interno :$internalPort · RAM máx: ${appMaxRamMb}MB · BD: '$effectiveDb')")
+        appendAppLog(appName, "[CPS-DotNet] 🚀 Iniciando '${dllFile.name}' (.NET 10 · Puerto :$appPort -> Interno :$internalPort · RAM máx: ${appMaxRamMb}MB · BD: '$effectiveDb')")
         Log.i(TAG, "Proceso .NET iniciado para '$appName' (${dllFile.absolutePath}) en puerto interno $internalPort")
 
         thread(name = "CPS-DotnetLog-$appName", isDaemon = true) {

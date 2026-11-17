@@ -122,7 +122,7 @@ Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcio
 
 ### 3. Desplegar un Proyecto .NET / ASP.NET Core (MVC, Razor, Web API)
 
-CajitaPaaS incluye el runtime oficial **.NET 8 + ASP.NET Core 8 (ARM64 Alpine)** (compatible con `.NET 6`, `.NET 7` y `.NET 8` mediante *roll-forward*).
+CajitaPaaS incluye el runtime oficial **.NET 10 + ASP.NET Core 10 (ARM64 Alpine)** (compatible con `.NET 6`, `.NET 7`, `.NET 8`, `.NET 9` y `.NET 10` mediante *roll-forward*).
 
 1. En tu PC, dentro de la carpeta del proyecto (donde está tu archivo `.csproj`), ejecuta:
    ```bash

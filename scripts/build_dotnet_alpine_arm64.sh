@@ -1,44 +1,45 @@
 #!/bin/sh
 # ==============================================================================
-# Script de empaquetado de .NET 8 Runtime + ASP.NET Core 8 ARM64 (Alpine 3.20)
+# Script de empaquetado de .NET 10.0 Runtime + ASP.NET Core 10.0 (linux-musl-arm64)
 # para CajitaPaaS (CPS):
-# 1. Instala dotnet8-runtime y aspnetcore8-runtime (aarch64) en un root limpio.
-# 2. Copia el binario `dotnet` como `libdotnet.so` y todas sus bibliotecas nativas
-#    (*.so) a `jniLibs/arm64-v8a` cumpliendo políticas SELinux W^X de Android.
-# 3. Empaqueta los ensamblados gestionados (.dll, .json) y el mapa de symlinks
-#    (`dotnet_so_map.txt`) en `assets/dotnet_alpine_bundle.zip`.
+# 1. Descarga el runtime oficial ASP.NET Core 10.0 para Alpine ARM64 (linux-musl-arm64)
+#    e instala las librerías nativas del sistema desde Alpine 3.20 (aarch64).
+# 2. Copia `dotnet` como `libdotnet.so` y todas sus bibliotecas nativas (*.so*)
+#    a `jniLibs/arm64-v8a` cumpliendo políticas SELinux W^X de Android.
+# 3. Empaqueta los ensamblados gestionados (.dll, .json) y `dotnet_so_map.txt`
+#    en `assets/dotnet_alpine_bundle.zip`.
 # ==============================================================================
 set -ex
+
+apk add --no-cache curl bash
 
 JNI_DIR="/workspace/android/app/src/main/jniLibs/arm64-v8a"
 ASSETS_DIR="/workspace/android/app/src/main/assets"
 STAGE_DIR="/tmp/dotnet_stage"
 ARM64_ROOT="/tmp/dotnet_arm64_root"
+DOTNET_SRC="/tmp/dotnet10_src"
 
-rm -rf "$STAGE_DIR" "$ARM64_ROOT"
-mkdir -p "$STAGE_DIR" "$ARM64_ROOT/etc/apk" "$JNI_DIR" "$ASSETS_DIR"
+rm -rf "$STAGE_DIR" "$ARM64_ROOT" "$DOTNET_SRC"
+mkdir -p "$STAGE_DIR" "$ARM64_ROOT/etc/apk" "$DOTNET_SRC" "$JNI_DIR" "$ASSETS_DIR"
 
 cp /etc/apk/repositories "$ARM64_ROOT/etc/apk/"
 cp -r /etc/apk/keys "$ARM64_ROOT/etc/apk/"
 
+# Instalar librerías del sistema requeridas por .NET 10 en Alpine ARM64 (aarch64)
 apk --arch aarch64 --root "$ARM64_ROOT" --initdb --no-scripts --allow-untrusted add \
-  musl dotnet8-runtime aspnetcore8-runtime icu-libs icu-data-full krb5-libs lttng-ust zlib openssl libstdc++ libgcc
+  musl icu-libs icu-data-full krb5-libs lttng-ust zlib openssl libstdc++ libgcc
 
-# Localizar dónde instala Alpine el directorio raíz de dotnet (/usr/lib/dotnet o /usr/share/dotnet)
-DOTNET_SRC=""
-for candidate in "$ARM64_ROOT/usr/lib/dotnet" "$ARM64_ROOT/usr/share/dotnet"; do
-  if [ -d "$candidate" ] && [ -e "$candidate/dotnet" ]; then
-    DOTNET_SRC="$candidate"
-    break
-  fi
-done
+# Descargar ASP.NET Core 10.0 Runtime (incluye Microsoft.NETCore.App + Microsoft.AspNetCore.App) para linux-musl-arm64
+curl -fSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+chmod +x /tmp/dotnet-install.sh
+bash /tmp/dotnet-install.sh --runtime aspnetcore --channel 10.0 --os linux-musl --arch arm64 --install-dir "$DOTNET_SRC"
 
-if [ -z "$DOTNET_SRC" ]; then
-  echo "ERROR: No se encontró el directorio dotnet en $ARM64_ROOT"
+if [ ! -e "$DOTNET_SRC/dotnet" ]; then
+  echo "ERROR: No se encontró el binario dotnet en $DOTNET_SRC"
   exit 1
 fi
 
-echo "Usando DOTNET_SRC=$DOTNET_SRC"
+ls -la "$DOTNET_SRC/shared/Microsoft.AspNetCore.App/"
 
 # 1. Copiar binario ejecutable principal `dotnet` como `libdotnet.so`
 cp -L "$DOTNET_SRC/dotnet" "$JNI_DIR/libdotnet.so"
@@ -86,7 +87,6 @@ find . -type f -o -type l | while IFS= read -r rel_raw; do
     *.so|*.so.*)
       clean_name=$(echo "${base#lib}" | tr -c 'a-zA-Z0-9_' '_')
       apk_so="libdotnet_${clean_name}.so"
-      # Evitar colisión si hubiera dos .so con distinto directorio pero mismo nombre base
       if [ -f "$JNI_DIR/$apk_so" ]; then
         existing_hash=$(sha256sum "$JNI_DIR/$apk_so" | awk '{print $1}')
         new_hash=$(sha256sum "$DOTNET_SRC/$rel" | awk '{print $1}')
@@ -116,4 +116,3 @@ zip -r -9 -q "$ASSETS_DIR/dotnet_alpine_bundle.zip" .
 
 ls -lh "$ASSETS_DIR/dotnet_alpine_bundle.zip"
 wc -l "$STAGE_DIR/dotnet_so_map.txt"
-
