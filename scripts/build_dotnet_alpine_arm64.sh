@@ -22,7 +22,7 @@ cp /etc/apk/repositories "$ARM64_ROOT/etc/apk/"
 cp -r /etc/apk/keys "$ARM64_ROOT/etc/apk/"
 
 apk --arch aarch64 --root "$ARM64_ROOT" --initdb --no-scripts --allow-untrusted add \
-  musl dotnet8-runtime aspnetcore8-runtime icu-libs icu-data-en krb5-libs lttng-ust zlib openssl libstdc++ libgcc
+  musl dotnet8-runtime aspnetcore8-runtime icu-libs icu-data-full krb5-libs lttng-ust zlib openssl libstdc++ libgcc
 
 # Localizar dónde instala Alpine el directorio raíz de dotnet (/usr/lib/dotnet o /usr/share/dotnet)
 DOTNET_SRC=""
