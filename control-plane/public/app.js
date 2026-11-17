@@ -1806,10 +1806,23 @@ const btnGoTunnelTab = document.getElementById('btnGoTunnelTab');
 const tunnelPublicUrlVal = document.getElementById('tunnelPublicUrlVal');
 const tunnelAdminUrlVal = document.getElementById('tunnelAdminUrlVal');
 const tunnelLanUrlVal = document.getElementById('tunnelLanUrlVal');
+const tunnelRealStatusBadge = document.getElementById('tunnelRealStatusBadge');
+const tunnelEnabledSwitch = document.getElementById('tunnelEnabledSwitch');
+const tunnelToggleTitle = document.getElementById('tunnelToggleTitle');
+const tunnelToggleSubtitle = document.getElementById('tunnelToggleSubtitle');
+const tunnelErrorBanner = document.getElementById('tunnelErrorBanner');
+const tunnelTokenSavedBadge = document.getElementById('tunnelTokenSavedBadge');
+const tunnelLogsPre = document.getElementById('tunnelLogsPre');
+const btnRefreshTunnelStatus = document.getElementById('btnRefreshTunnelStatus');
+const btnCopyOrigin8080 = document.getElementById('btnCopyOrigin8080');
+
 const btnRegenerateQuickTunnel = document.getElementById('btnRegenerateQuickTunnel');
 const btnSaveCustomTunnel = document.getElementById('btnSaveCustomTunnel');
 const inputCustomDomain = document.getElementById('inputCustomDomain');
 const inputTunnelToken = document.getElementById('inputTunnelToken');
+const inputTunnelProtocol = document.getElementById('inputTunnelProtocol');
+
+let tunnelHasSavedToken = false;
 
 function renderTunnelInfo(tunnel) {
   if (!tunnel) return;
@@ -1817,6 +1830,59 @@ function renderTunnelInfo(tunnel) {
   const lanPort = tunnel.lanPort || window.location.port || 4000;
   const lanAdminUrl = tunnel.lanAdminUrl || `http://${lanIp}:${lanPort}`;
   const lanAppsGatewayUrl = tunnel.lanUrl || `http://${lanIp}:8080`;
+
+  const enabled = tunnel.enabled !== false;
+  const status = String(tunnel.status || (enabled ? 'connecting' : 'disabled'));
+  tunnelHasSavedToken = Boolean(tunnel.hasToken);
+
+  if (tunnelEnabledSwitch) {
+    tunnelEnabledSwitch.checked = enabled;
+  }
+  if (tunnelToggleTitle) {
+    tunnelToggleTitle.textContent = enabled
+      ? 'Túnel Público a Internet: ENCENDIDO'
+      : 'Túnel Público a Internet: APAGADO (Solo Red Local)';
+    tunnelToggleTitle.style.color = enabled ? 'var(--accent-mint)' : '#f5f9fc';
+  }
+  if (tunnelToggleSubtitle) {
+    tunnelToggleSubtitle.textContent = enabled
+      ? 'Apagalo si querés trabajar únicamente dentro de tu red Wi-Fi local sin exponer nada a Internet.'
+      : 'Tus apps siguen funcionando en tu Wi-Fi local, pero no están expuestas a Internet.';
+  }
+
+  if (tunnelRealStatusBadge) {
+    if (!enabled || status === 'disabled') {
+      tunnelRealStatusBadge.textContent = '⚪ APAGADO (SOLO LAN)';
+      tunnelRealStatusBadge.style.color = 'var(--text-muted)';
+      tunnelRealStatusBadge.style.borderColor = 'var(--border)';
+      tunnelRealStatusBadge.style.background = 'rgba(255,255,255,0.06)';
+    } else if (status === 'online') {
+      tunnelRealStatusBadge.textContent = '🟢 CONECTADO A CLOUDFLARE';
+      tunnelRealStatusBadge.style.color = 'var(--accent-mint)';
+      tunnelRealStatusBadge.style.borderColor = 'rgba(0, 229, 163, 0.45)';
+      tunnelRealStatusBadge.style.background = 'rgba(0, 229, 163, 0.14)';
+    } else if (status === 'error' || status === 'binary_missing') {
+      tunnelRealStatusBadge.textContent = '🔴 ERROR DE CONEXIÓN';
+      tunnelRealStatusBadge.style.color = '#ffb3c1';
+      tunnelRealStatusBadge.style.borderColor = 'var(--danger)';
+      tunnelRealStatusBadge.style.background = 'var(--danger-bg)';
+    } else {
+      tunnelRealStatusBadge.textContent = status === 'reconnecting' ? '🟠 RECONECTANDO...' : '🟡 CONECTANDO...';
+      tunnelRealStatusBadge.style.color = 'var(--amber)';
+      tunnelRealStatusBadge.style.borderColor = 'var(--amber)';
+      tunnelRealStatusBadge.style.background = 'var(--amber-bg)';
+    }
+  }
+
+  if (tunnelErrorBanner) {
+    if (enabled && tunnel.lastError) {
+      tunnelErrorBanner.textContent = `⚠️ Último error de Cloudflared: ${tunnel.lastError}`;
+      tunnelErrorBanner.classList.remove('hidden');
+    } else {
+      tunnelErrorBanner.textContent = '';
+      tunnelErrorBanner.classList.add('hidden');
+    }
+  }
 
   if (topLanUrl) {
     topLanUrl.textContent = lanAdminUrl;
@@ -1826,7 +1892,7 @@ function renderTunnelInfo(tunnel) {
   if (topLanPortVal) topLanPortVal.textContent = `${lanPort} (Panel) / 8080 y 3001 (Tus Apps)`;
 
   const rawPub = tunnel.publicUrl || '';
-  const hasRealPublicUrl = rawPub.startsWith('http://') || rawPub.startsWith('https://');
+  const hasRealPublicUrl = enabled && (rawPub.startsWith('http://') || rawPub.startsWith('https://'));
   const displayPub = rawPub || `En tu Wi-Fi: ${lanAppsGatewayUrl}`;
 
   if (topTunnelUrl) {
@@ -1834,12 +1900,39 @@ function renderTunnelInfo(tunnel) {
     topTunnelUrl.href = hasRealPublicUrl ? rawPub : lanAppsGatewayUrl;
   }
   if (topTunnelBadge) {
-    topTunnelBadge.textContent =
-      tunnel.mode === 'token' ? 'DOMINIO PROPIO FIJO' : 'MODO GRATIS (TryCloudflare)';
+    if (!enabled) {
+      topTunnelBadge.textContent = 'SOLO RED LOCAL (APAGADO)';
+    } else {
+      topTunnelBadge.textContent =
+        tunnel.mode === 'token' ? 'DOMINIO PROPIO FIJO' : 'MODO GRATIS (TryCloudflare)';
+    }
   }
   if (tunnelPublicUrlVal) tunnelPublicUrlVal.textContent = displayPub;
   if (tunnelAdminUrlVal) tunnelAdminUrlVal.textContent = tunnel.adminUrl || lanAdminUrl;
   if (tunnelLanUrlVal) tunnelLanUrlVal.textContent = `${lanAppsGatewayUrl} (Apps) · ${lanAdminUrl} (Panel)`;
+
+  if (inputCustomDomain && tunnel.customDomain && !inputCustomDomain.value && document.activeElement !== inputCustomDomain) {
+    inputCustomDomain.value = tunnel.customDomain;
+  }
+  if (inputTunnelProtocol && tunnel.protocol) {
+    inputTunnelProtocol.value = tunnel.protocol;
+  }
+  if (tunnelTokenSavedBadge) {
+    if (tunnel.hasToken) {
+      tunnelTokenSavedBadge.textContent = `🔒 Token guardado (${tunnel.tokenPreview || '••••'})`;
+      tunnelTokenSavedBadge.classList.remove('hidden');
+    } else {
+      tunnelTokenSavedBadge.classList.add('hidden');
+    }
+  }
+  if (tunnelLogsPre && typeof tunnel.logs === 'string') {
+    tunnelLogsPre.textContent = tunnel.logs.trim()
+      ? tunnel.logs
+      : enabled
+      ? 'Esperando salida de cloudflared...'
+      : 'Túnel apagado (Modo Solo Red Local Wi-Fi).';
+    tunnelLogsPre.scrollTop = tunnelLogsPre.scrollHeight;
+  }
 }
 
 async function fetchTunnelStatus() {
@@ -1851,6 +1944,49 @@ async function fetchTunnelStatus() {
       renderTunnelInfo(data);
     }
   } catch (_e) {}
+}
+
+if (tunnelEnabledSwitch) {
+  tunnelEnabledSwitch.addEventListener('change', async () => {
+    const enabled = tunnelEnabledSwitch.checked;
+    try {
+      const res = await fetch('./api/v1/tunnel/toggle', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json();
+      if (res.ok && data.tunnel) {
+        renderTunnelInfo(data.tunnel);
+      } else {
+        tunnelEnabledSwitch.checked = !enabled;
+      }
+    } catch (_err) {
+      tunnelEnabledSwitch.checked = !enabled;
+    }
+  });
+}
+
+if (btnRefreshTunnelStatus) {
+  btnRefreshTunnelStatus.addEventListener('click', async () => {
+    btnRefreshTunnelStatus.disabled = true;
+    btnRefreshTunnelStatus.textContent = '⏳ Actualizando...';
+    await fetchTunnelStatus();
+    btnRefreshTunnelStatus.disabled = false;
+    btnRefreshTunnelStatus.textContent = '🔄 Actualizar Estado / Logs';
+  });
+}
+
+if (btnCopyOrigin8080) {
+  btnCopyOrigin8080.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText('http://127.0.0.1:8080');
+      btnCopyOrigin8080.textContent = '✅ Copiado';
+      setTimeout(() => {
+        btnCopyOrigin8080.textContent = '📋 Copiar';
+      }, 1500);
+    } catch (_e) {}
+  });
 }
 
 if (btnCopyLanUrl) {
@@ -1890,11 +2026,12 @@ if (btnRegenerateQuickTunnel) {
   btnRegenerateQuickTunnel.addEventListener('click', async () => {
     btnRegenerateQuickTunnel.disabled = true;
     btnRegenerateQuickTunnel.textContent = '⏳ Solicitando nueva URL a Cloudflare...';
+    const protocol = inputTunnelProtocol ? inputTunnelProtocol.value : 'http2';
     try {
       const res = await fetch('./api/v1/tunnel/config', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'quick' })
+        body: JSON.stringify({ mode: 'quick', protocol })
       });
       const data = await res.json();
       if (res.ok && data.tunnel) {
@@ -1918,7 +2055,8 @@ if (btnSaveCustomTunnel) {
   btnSaveCustomTunnel.addEventListener('click', async () => {
     const customDomain = inputCustomDomain ? inputCustomDomain.value.trim() : '';
     const token = inputTunnelToken ? inputTunnelToken.value.trim() : '';
-    if (!token) {
+    const protocol = inputTunnelProtocol ? inputTunnelProtocol.value : 'http2';
+    if (!token && !tunnelHasSavedToken) {
       showResultModal({
         type: 'warning',
         title: 'Falta el Token de Cloudflare',
@@ -1934,17 +2072,34 @@ if (btnSaveCustomTunnel) {
       const res = await fetch('./api/v1/tunnel/config', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'token', customDomain, token })
+        body: JSON.stringify({ mode: 'token', customDomain, token, protocol })
       });
       const data = await res.json();
       if (res.ok && data.tunnel) {
+        if (inputTunnelToken) inputTunnelToken.value = '';
         renderTunnelInfo(data.tunnel);
-        launchConfetti();
+        if (data.tunnel.status === 'error' || data.tunnel.lastError) {
+          showResultModal({
+            type: 'warning',
+            title: 'Hubo un problema al conectar el Token',
+            desc: data.tunnel.lastError || 'Cloudflare rechazó el token ingresado.',
+            pill: 'Revisá el visor de Diagnóstico abajo para más detalles.'
+          });
+        } else {
+          launchConfetti();
+          showResultModal({
+            type: 'success',
+            title: '¡Dominio Fijo Configurado!',
+            desc: `Tu CajitaPaaS se está conectando en ${data.tunnel.publicUrl}. Estado: ${data.tunnel.status === 'online' ? 'CONECTADO' : 'Conectando...'}`,
+            pill: '🔒 Verificá el estado verde en el panel de diagnóstico'
+          });
+        }
+      } else {
         showResultModal({
-          type: 'success',
-          title: '¡Dominio Fijo Conectado!',
-          desc: `Tu CajitaPaaS ahora está publicada permanentemente en ${data.tunnel.publicUrl}`,
-          pill: '🔒 Conexión permanente establecida'
+          type: 'warning',
+          title: 'No se pudo guardar el Túnel',
+          desc: data.error || 'Error al configurar el túnel con Token.',
+          pill: 'Verificá tu Token y volvé a intentarlo.'
         });
       }
     } finally {

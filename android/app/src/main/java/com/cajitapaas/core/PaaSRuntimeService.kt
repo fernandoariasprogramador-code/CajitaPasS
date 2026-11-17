@@ -182,31 +182,42 @@ class PaaSRuntimeService : Service() {
     }
 
     private fun restartTunnelBlocking(mode: String, token: String, customDomain: String): String? {
-        embeddedServer?.publicTunnelUrl = null
-        embeddedServer?.tunnelStatus = "connecting"
-        embeddedServer?.tunnelLastError = null
+        val prefs = getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean("tunnel_enabled", true)
 
-        if (mode == "token" && customDomain.isNotBlank()) {
-            val cleanDomain = customDomain.replace(Regex("^https?://"), "").trimEnd('/')
-            embeddedServer?.publicTunnelUrl = "https://$cleanDomain"
-            embeddedServer?.tunnelStatus = "online"
-        }
+        embeddedServer?.publicTunnelUrl = null
+        embeddedServer?.tunnelLastError = null
 
         tunnelJob?.cancel()
         runCatching { cloudflaredProcess?.destroyForcibly() }
         cloudflaredProcess = null
 
+        if (!enabled) {
+            embeddedServer?.tunnelStatus = "disabled"
+            embeddedServer?.appendTunnelLog("[CPS-Tunnel] ⏸️ Túnel público apagado por el usuario (Modo Solo Red Local Wi-Fi).")
+            updateNotification("Online (Modo Solo Red Local Wi-Fi)")
+            return null
+        }
+
+        embeddedServer?.tunnelStatus = "connecting"
+        if (mode == "token" && customDomain.isNotBlank()) {
+            val cleanDomain = customDomain.replace(Regex("^https?://", RegexOption.IGNORE_CASE), "").trimEnd('/')
+            embeddedServer?.publicTunnelUrl = "https://$cleanDomain"
+        }
+
         tunnelJob = serviceScope.launch {
             startBuiltInCloudflaredTunnelLoop()
         }
 
-        // Esperar hasta 8 segundos si es Quick Tunnel a que cloudflared publique la nueva URL *.trycloudflare.com
-        if (mode != "token") {
-            repeat(16) {
-                val url = embeddedServer?.publicTunnelUrl
-                if (!url.isNullOrBlank()) return url
-                Thread.sleep(500)
+        // Esperar hasta 8 segundos a que cloudflared confirme la conexión (o publique la URL *.trycloudflare.com)
+        repeat(16) {
+            if (embeddedServer?.tunnelStatus == "online" || embeddedServer?.tunnelStatus == "error") {
+                return embeddedServer?.publicTunnelUrl
             }
+            if (mode != "token" && !embeddedServer?.publicTunnelUrl.isNullOrBlank()) {
+                return embeddedServer?.publicTunnelUrl
+            }
+            Thread.sleep(500)
         }
         return embeddedServer?.publicTunnelUrl
     }
@@ -216,6 +227,7 @@ class PaaSRuntimeService : Service() {
             val cloudflaredBin = File(applicationInfo.nativeLibraryDir, "libcloudflared.so")
             if (!cloudflaredBin.exists()) {
                 embeddedServer?.tunnelStatus = "binary_missing"
+                embeddedServer?.tunnelLastError = "Binario libcloudflared.so no encontrado en el paquete."
                 return@withContext
             }
 
@@ -223,25 +235,37 @@ class PaaSRuntimeService : Service() {
 
             while (serviceScope.isActive) {
                 val prefs = getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE)
+                val enabled = prefs.getBoolean("tunnel_enabled", true)
+                if (!enabled) {
+                    embeddedServer?.tunnelStatus = "disabled"
+                    embeddedServer?.publicTunnelUrl = null
+                    delay(2500L)
+                    continue
+                }
+
                 val mode = prefs.getString("tunnel_mode", "quick") ?: "quick"
                 val savedToken = prefs.getString("tunnel_token", "")?.trim().orEmpty()
                 val savedDomain = prefs.getString("tunnel_custom_domain", "")?.trim().orEmpty()
+                val protocol = prefs.getString("tunnel_protocol", "http2")
+                    ?.trim()
+                    ?.lowercase()
+                    ?.let { if (it == "quic") "quic" else "http2" }
+                    ?: "http2"
 
                 try {
                     runCatching { cloudflaredProcess?.destroyForcibly() }
+                    embeddedServer?.tunnelStatus = "connecting"
 
+                    val cleanDomain = savedDomain.replace(Regex("^https?://", RegexOption.IGNORE_CASE), "").trimEnd('/')
                     val args = if (mode == "token" && savedToken.isNotEmpty()) {
-                        if (savedDomain.isNotEmpty()) {
-                            val clean = savedDomain.replace(Regex("^https?://"), "").trimEnd('/')
-                            embeddedServer?.publicTunnelUrl = "https://$clean"
-                            embeddedServer?.tunnelStatus = "online"
-                        }
+                        embeddedServer?.publicTunnelUrl = if (cleanDomain.isNotEmpty()) "https://$cleanDomain" else null
+                        embeddedServer?.appendTunnelLog("[CPS-Tunnel] 🔐 Iniciando túnel con Token propio (protocolo: $protocol)...")
                         listOf(
                             cloudflaredBin.absolutePath,
                             "tunnel",
                             "--no-autoupdate",
                             "--protocol",
-                            "http2",
+                            protocol,
                             "--edge-ip-version",
                             "4",
                             "run",
@@ -249,13 +273,14 @@ class PaaSRuntimeService : Service() {
                             savedToken
                         )
                     } else {
-                        embeddedServer?.tunnelStatus = "connecting"
+                        embeddedServer?.publicTunnelUrl = null
+                        embeddedServer?.appendTunnelLog("[CPS-Tunnel] ⚡ Iniciando Quick Tunnel gratuito (*.trycloudflare.com, protocolo: $protocol)...")
                         listOf(
                             cloudflaredBin.absolutePath,
                             "tunnel",
                             "--no-autoupdate",
                             "--protocol",
-                            "http2",
+                            protocol,
                             "--edge-ip-version",
                             "4",
                             "--url",
@@ -278,6 +303,8 @@ class PaaSRuntimeService : Service() {
                     proc.inputStream?.bufferedReader()?.useLines { lines ->
                         lines.forEach { line ->
                             Log.d(TAG, "[cloudflared] $line")
+                            embeddedServer?.appendTunnelLog(line)
+
                             val match = regex.find(line)
                             if (match != null) {
                                 val publicUrl = match.value
@@ -286,21 +313,46 @@ class PaaSRuntimeService : Service() {
                                 embeddedServer?.tunnelLastError = null
                                 updateNotification("Online: $publicUrl")
                                 Log.i(TAG, "Túnel Cloudflare activo en: $publicUrl")
-                            } else if (line.contains("ERR", ignoreCase = true) || line.contains("failed", ignoreCase = true)) {
-                                embeddedServer?.tunnelLastError = line.take(160)
+                            } else if (line.contains("Registered tunnel connection", ignoreCase = true)) {
+                                embeddedServer?.tunnelStatus = "online"
+                                embeddedServer?.tunnelLastError = null
+                                val activeLabel = if (cleanDomain.isNotEmpty()) "https://$cleanDomain" else "Túnel Token Cloudflare"
+                                if (mode == "token" && cleanDomain.isNotEmpty()) {
+                                    embeddedServer?.publicTunnelUrl = "https://$cleanDomain"
+                                }
+                                updateNotification("Online: $activeLabel")
+                                Log.i(TAG, "Túnel Cloudflare Token conectado: $activeLabel")
+                            } else if (
+                                line.contains("Provided Tunnel token is not valid", ignoreCase = true) ||
+                                line.contains("Unauthorized", ignoreCase = true) ||
+                                line.contains("failed to unmarshal", ignoreCase = true)
+                            ) {
+                                embeddedServer?.tunnelStatus = "error"
+                                embeddedServer?.tunnelLastError = "Token de Cloudflare inválido o rechazado: ${line.take(140)}"
+                            } else if (line.contains("ERR", ignoreCase = true) || line.contains("failed to", ignoreCase = true)) {
+                                embeddedServer?.tunnelLastError = line.take(180)
                             }
                         }
                     }
 
                     val exitCode = proc.waitFor()
                     Log.w(TAG, "Proceso Cloudflared terminó con código $exitCode. Reiniciando túnel en 3s...")
-                    embeddedServer?.tunnelStatus = "reconnecting"
-                    if (mode != "token") {
+                    val stillEnabled = getSharedPreferences("cps_admin_prefs", Context.MODE_PRIVATE).getBoolean("tunnel_enabled", true)
+                    if (!stillEnabled) {
+                        embeddedServer?.tunnelStatus = "disabled"
                         embeddedServer?.publicTunnelUrl = null
+                    } else {
+                        if (embeddedServer?.tunnelStatus != "error") {
+                            embeddedServer?.tunnelStatus = "reconnecting"
+                        }
+                        if (mode != "token") {
+                            embeddedServer?.publicTunnelUrl = null
+                        }
                     }
                 } catch (e: Exception) {
                     embeddedServer?.tunnelStatus = "error"
                     embeddedServer?.tunnelLastError = e.message
+                    embeddedServer?.appendTunnelLog("[CPS-Tunnel] ❌ Excepción: ${e.message}")
                     Log.e(TAG, "Error en bucle de túnel Cloudflared", e)
                 }
 

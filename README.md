@@ -287,6 +287,19 @@ CPS expone variables globales en el cliente:
 
 ---
 
+## 🌐 Túnel Cloudflare: Link Rápido Gratis o Dominio Fijo Propio
+
+CajitaPaaS incluye `cloudflared` nativo para publicar tus proyectos en Internet por HTTPS sin abrir puertos en el router y sorteando bloqueos CGNAT. En la pestaña **🌐 3. Red, Túnel y Supervivencia Wi-Fi** tienes control total:
+
+- **Interruptor Túnel Público / Solo Red Local**: Apaga la exposición a Internet en 1 clic si prefieres trabajar únicamente dentro de tu red Wi-Fi privada.
+- **Opción 1 — Túnel Rápido Gratis (`*.trycloudflare.com`)**: No requiere cuenta ni configuración; al iniciar la app genera una URL HTTPS temporal automáticamente.
+- **Opción 2 — Dominio Fijo Propio con Token de Cloudflare Zero Trust**:
+  1. Delega los DNS (Nameservers) de tu dominio propio (ej. `midominio.com`) a una cuenta gratuita de **Cloudflare**.
+  2. En **Cloudflare Zero Trust** (`Networks → Tunnels`), crea un túnel tipo *Cloudflared*, copia el **Token** (`eyJhIjoi...`) y en **Public Hostname** apunta tu dominio o subdominio (ej. `app.midominio.com`) hacia `HTTP://127.0.0.1:8080`.
+  3. Pega el dominio y el token en CajitaPaaS, elige el protocolo (`HTTP/2` recomendado en móviles o `QUIC`) y guarda. El panel verificará la conexión real con Cloudflare (`Registered tunnel connection`) y mostrará logs y posibles errores en vivo.
+
+---
+
 ## 🛠️ Arquitectura Técnica y Funcionamiento Interno
 
 Para ingenieros, desarrolladores y curiosos del funcionamiento a bajo nivel:

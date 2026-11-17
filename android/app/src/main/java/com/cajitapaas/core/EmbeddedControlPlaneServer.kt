@@ -117,6 +117,25 @@ class EmbeddedControlPlaneServer(
     @Volatile
     var tunnelLastError: String? = null
 
+    private val tunnelLogLines = ArrayDeque<String>(45)
+
+    fun appendTunnelLog(rawLine: String) {
+        val clean = rawLine.trimEnd()
+        if (clean.isEmpty()) return
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        val formatted = if (clean.startsWith("[")) clean else "[$ts] $clean"
+        synchronized(tunnelLogLines) {
+            if (tunnelLogLines.size >= 40) tunnelLogLines.removeFirst()
+            tunnelLogLines.addLast(formatted)
+        }
+    }
+
+    fun clearTunnelLogs() {
+        synchronized(tunnelLogLines) {
+            tunnelLogLines.clear()
+        }
+    }
+
     @Synchronized
     fun start() {
         val controlAlive = serverSocket != null && !serverSocket!!.isClosed
@@ -2112,23 +2131,61 @@ class EmbeddedControlPlaneServer(
             return sendJson(out, 200, buildTunnelStatusJson().toString())
         }
 
+        if (path == "/api/v1/tunnel/toggle" && method == "POST") {
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val enabled = json.optBoolean("enabled", true)
+            prefs.edit().putBoolean("tunnel_enabled", enabled).apply()
+
+            val mode = prefs.getString("tunnel_mode", "quick") ?: "quick"
+            val token = prefs.getString("tunnel_token", "") ?: ""
+            val customDomain = prefs.getString("tunnel_custom_domain", "") ?: ""
+
+            onTunnelRestartRequested?.invoke(mode, token, customDomain)
+
+            val tunnelObj = buildTunnelStatusJson()
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put(
+                        "message",
+                        if (enabled) "Túnel Cloudflare activado."
+                        else "Túnel público apagado (Modo Solo Red Local Wi-Fi)."
+                    )
+                    .put("tunnel", tunnelObj)
+                    .toString()
+            )
+        }
+
         if (path == "/api/v1/tunnel/config" && method == "POST") {
             val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
             val mode = json.optString("mode", "quick")
-            val token = json.optString("token", "").trim()
-            val customDomain = json.optString("customDomain", "").trim()
+            val rawToken = json.optString("token", "").trim()
+            val existingToken = prefs.getString("tunnel_token", "")?.trim().orEmpty()
+            val effectiveToken = if (rawToken.isNotEmpty()) rawToken else existingToken
+            val cleanDomain = json.optString("customDomain", "")
+                .trim()
+                .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
+                .trimEnd('/')
+            val protocol = json.optString("protocol", prefs.getString("tunnel_protocol", "http2") ?: "http2")
+                .trim()
+                .lowercase()
+                .let { if (it == "quic") "quic" else "http2" }
 
-            if (mode == "token" && token.isEmpty()) {
+            if (mode == "token" && effectiveToken.isEmpty()) {
                 return sendJson(out, 400, JSONObject().put("error", "Debes pegar el Token del túnel de Cloudflare.").toString())
             }
 
             prefs.edit()
+                .putBoolean("tunnel_enabled", true)
                 .putString("tunnel_mode", mode)
-                .putString("tunnel_token", token)
-                .putString("tunnel_custom_domain", customDomain)
+                .putString("tunnel_token", if (mode == "token") effectiveToken else existingToken)
+                .putString("tunnel_custom_domain", cleanDomain)
+                .putString("tunnel_protocol", protocol)
                 .apply()
 
-            onTunnelRestartRequested?.invoke(mode, token, customDomain)
+            clearTunnelLogs()
+            onTunnelRestartRequested?.invoke(mode, effectiveToken, cleanDomain)
 
             val tunnelObj = buildTunnelStatusJson()
             return sendJson(
@@ -2270,20 +2327,45 @@ class EmbeddedControlPlaneServer(
         val lanIp = getDeviceLanIp()
         val lanAdminAddress = "http://$lanIp:$port"
         val lanGatewayAddress = "http://$lanIp:$GATEWAY_PORT"
+        val enabled = prefs.getBoolean("tunnel_enabled", true)
         val mode = prefs.getString("tunnel_mode", "quick") ?: "quick"
+        val savedToken = prefs.getString("tunnel_token", "")?.trim().orEmpty()
+        val savedDomain = prefs.getString("tunnel_custom_domain", "")?.trim().orEmpty()
+        val protocol = prefs.getString("tunnel_protocol", "http2") ?: "http2"
         val pub = publicTunnelUrl
 
+        val effectiveStatus = if (!enabled) "disabled" else tunnelStatus
+        val displayPublicUrl = when {
+            !enabled -> "Túnel apagado (Modo Solo Red Local Wi-Fi)"
+            pub != null -> pub
+            mode == "token" && savedDomain.isNotEmpty() -> "https://$savedDomain"
+            mode == "token" -> "Túnel Token activo (configurado en Cloudflare Zero Trust)"
+            else -> "Conectando túnel Cloudflare... (Usá $lanGatewayAddress en tu Wi-Fi)"
+        }
+
+        val logsText = synchronized(tunnelLogLines) {
+            tunnelLogLines.joinToString("\n")
+        }
+
+        val tokenPreview = if (savedToken.length > 8) "••••${savedToken.takeLast(6)}" else if (savedToken.isNotEmpty()) "••••••" else ""
+
         return JSONObject()
+            .put("enabled", enabled)
             .put("mode", mode)
-            .put("status", if (pub != null) "online" else tunnelStatus)
-            .put("publicUrl", pub ?: "Conectando túnel Cloudflare... (Usá $lanGatewayAddress en tu Wi-Fi)")
-            .put("adminUrl", if (pub != null) "$pub/_control/" else lanAdminAddress)
+            .put("protocol", protocol)
+            .put("status", effectiveStatus)
+            .put("publicUrl", displayPublicUrl)
+            .put("adminUrl", if (enabled && pub != null) "$pub/_control/" else lanAdminAddress)
+            .put("customDomain", savedDomain)
+            .put("hasToken", savedToken.isNotEmpty())
+            .put("tokenPreview", tokenPreview)
             .put("lanIp", lanIp)
             .put("lanPort", port)
             .put("gatewayPort", GATEWAY_PORT)
             .put("lanUrl", lanGatewayAddress)
             .put("lanAdminUrl", lanAdminAddress)
             .put("lastError", tunnelLastError ?: JSONObject.NULL)
+            .put("logs", logsText)
     }
 
     private fun loadSavedProjects(): JSONObject {

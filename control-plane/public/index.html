@@ -1216,10 +1216,34 @@
         </div>
 
         <div class="card" style="margin-bottom: 1.25rem; border-color: rgba(0, 229, 163, 0.45);">
-          <h3 class="card-title">🌐 Tus Direcciones de Acceso (Local e Internet)</h3>
-          <p class="card-desc">
-            CajitaPaaS salta el bloqueo CGNAT de tu operadora móvil o Wi-Fi usando <strong>Cloudflare Tunnel</strong>. Aquí ves las URLs exactas que el túnel genera automáticamente.
-          </p>
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+            <div>
+              <h3 class="card-title" style="margin-bottom: 0.2rem;">🌐 Tus Direcciones de Acceso (Local e Internet)</h3>
+              <p class="card-desc" style="margin-bottom: 0;">
+                CajitaPaaS salta el bloqueo CGNAT de tu operadora móvil o Wi-Fi usando <strong>Cloudflare Tunnel</strong>.
+              </p>
+            </div>
+            <span id="tunnelRealStatusBadge" class="cps-badge" style="font-size: 0.82rem; padding: 0.3rem 0.75rem;">
+              🟡 CONECTANDO...
+            </span>
+          </div>
+
+          <div class="switch-row" style="margin-top: 1rem; margin-bottom: 0.85rem;">
+            <div>
+              <strong id="tunnelToggleTitle" style="font-size: 1.02rem; color: var(--accent-mint);">
+                Túnel Público a Internet: ENCENDIDO
+              </strong>
+              <div id="tunnelToggleSubtitle" style="font-size: 0.84rem; color: var(--text-muted);">
+                Apagalo si querés trabajar únicamente dentro de tu red Wi-Fi local sin exponer nada a Internet.
+              </div>
+            </div>
+            <label class="toggle-switch" title="Prender o apagar Túnel Público Cloudflare">
+              <input type="checkbox" id="tunnelEnabledSwitch" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div id="tunnelErrorBanner" class="error-banner hidden" role="alert" style="margin-top: 0.5rem;"></div>
 
           <div class="dbeaver-info" style="margin-top: 0.5rem;">
             <div>• <strong>URL Pública de tus Apps (Frontend / API):</strong> <span id="tunnelPublicUrlVal" style="color: var(--accent-mint); font-weight: 800;">Conectando túnel Cloudflare...</span></div>
@@ -1245,21 +1269,60 @@
 
           <!-- Modo 2: Token de Cloudflare (Dominio Fijo Permanente) -->
           <div class="card" style="border-color: rgba(24, 144, 255, 0.45);">
-            <h3 class="card-title">🔒 Opción 2: Mi Propio Dominio Fijo (Token Cloudflare)</h3>
-            <p class="card-desc">
-              Si quieres que tu URL <strong>nunca cambie</strong> (ej. <code>https://sistema.miempresa.com</code>), crea un túnel en el panel gratuito de <strong>Cloudflare Zero Trust</strong> y pega tu Token aquí.
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <h3 class="card-title" style="margin-bottom: 0;">🔒 Opción 2: Mi Propio Dominio Fijo (Token Cloudflare)</h3>
+              <span id="tunnelTokenSavedBadge" class="cps-badge hidden" style="margin-left: 0; background: rgba(24, 144, 255, 0.18); color: #52a9ff; border-color: rgba(24, 144, 255, 0.45);">
+                🔒 Token guardado
+              </span>
+            </div>
+            <p class="card-desc" style="margin-top: 0.35rem;">
+              Si ya tenés un dominio DNS propio y querés que tu URL <strong>nunca cambie</strong> (ej. <code>https://app.tudominio.com</code>), creá un túnel gratuito en <strong>Cloudflare Zero Trust</strong> y pegá tu Token aquí.
             </p>
+
+            <div style="padding: 0.75rem 0.9rem; border-radius: 12px; background: rgba(24, 144, 255, 0.08); border: 1px dashed rgba(24, 144, 255, 0.4); font-size: 0.83rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+              <strong style="color: #52a9ff;">📋 Guía rápida en Cloudflare Zero Trust:</strong><br/>
+              En <em>Networks → Tunnels → Public Hostname</em>, apuntá tu dominio a:<br/>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.35rem; flex-wrap: wrap;">
+                <code style="color: var(--accent-mint); font-weight: 800; background: var(--bg-input); padding: 0.25rem 0.55rem; border-radius: 6px; border: 1px solid var(--border);">HTTP://127.0.0.1:8080</code>
+                <button type="button" id="btnCopyOrigin8080" class="btn btn-secondary btn-small" style="min-height: 32px; padding: 0.25rem 0.65rem; font-size: 0.78rem;">
+                  📋 Copiar
+                </button>
+              </div>
+            </div>
 
             <label for="inputCustomDomain">Tu Dominio Configurado en Cloudflare</label>
             <input type="text" id="inputCustomDomain" placeholder="ej: app.midominio.com" />
 
             <label for="inputTunnelToken">Token del Túnel (CLOUDFLARE_TUNNEL_TOKEN)</label>
-            <input type="password" id="inputTunnelToken" placeholder="eyJhIjoi..." />
+            <input type="password" id="inputTunnelToken" placeholder="Pegá tu token eyJhIjoi... (dejá vacío para conservar el actual)" />
+
+            <label for="inputTunnelProtocol">Protocolo de Conexión</label>
+            <select id="inputTunnelProtocol">
+              <option value="http2" selected>HTTP/2 (Recomendado en Android / redes móviles)</option>
+              <option value="quic">QUIC / UDP (Más rápido si tu red no bloquea UDP)</option>
+            </select>
 
             <button id="btnSaveCustomTunnel" type="button" class="btn" style="margin-top: 1.2rem;">
               💾 Guardar Token y Conectar Dominio Fijo
             </button>
           </div>
+        </div>
+
+        <!-- Diagnóstico y Logs en vivo de Cloudflared -->
+        <div class="card" style="margin-top: 1.25rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <div>
+              <h3 class="card-title" style="margin-bottom: 0.15rem;">🩺 Diagnóstico y Logs de Cloudflared</h3>
+              <p class="card-desc" style="margin-bottom: 0;">Mostrando la conexión real en vivo con los servidores de Cloudflare.</p>
+            </div>
+            <button id="btnRefreshTunnelStatus" type="button" class="btn btn-secondary btn-small">
+              🔄 Actualizar Estado / Logs
+            </button>
+          </div>
+          <pre
+            id="tunnelLogsPre"
+            style="background: #05080c; color: #b7d7eb; border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; font-family: 'Consolas', monospace; font-size: 0.8rem; line-height: 1.45; max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;"
+          >Esperando logs de cloudflared...</pre>
         </div>
       </section>
     </main>
