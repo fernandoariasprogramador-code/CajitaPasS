@@ -768,6 +768,8 @@ class EmbeddedControlPlaneServer(
 
         val args = listOf(
             muslLinker.absolutePath,
+            "--argv0",
+            "$dotnetRootPath/dotnet",
             "--library-path",
             libSearchPath,
             dotnetBin.absolutePath,
