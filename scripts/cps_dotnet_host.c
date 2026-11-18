@@ -36,3 +36,4 @@ int main(int argc, char** argv) {
     /* app_path = NULL makes hostfxr behave identically to `dotnet` CLI */
     return main_fn(argc, (const char**)argv, host_path, dotnet_root, NULL);
 }
+

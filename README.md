@@ -114,6 +114,7 @@ Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcio
 #### ➕ ¿Y si mi proyecto usa otras librerías de NPM (`zod`, `socket.io`, `dayjs`, `nodemailer`, etc.)?
 
 ¡CajitaPaaS las detecta e instala con tu autorización!
+
 1. Al subir tu archivo `.zip`, el servidor analiza automáticamente tu `package.json`.
 2. Si detecta dependencias que aún no están en el teléfono, te muestra una ventana en el Panel Web solicitando tu **autorización previa**.
 3. Al presionar **"✅ Autorizar e Instalar"**, CajitaPaaS descarga e instala los paquetes directamente desde `registry.npmjs.org` dentro de un **Almacén Compartido (`cps_shared_node_modules`)** estilo `pnpm` para no duplicar espacio entre proyectos, y reinicia tu API automáticamente.
@@ -122,7 +123,7 @@ Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcio
 
 ### 3. Desplegar un Proyecto .NET / ASP.NET Core (MVC, Razor, Web API)
 
-CajitaPaaS incluye el runtime oficial **.NET 10 + ASP.NET Core 10 (ARM64 Alpine)** (compatible con `.NET 6`, `.NET 7`, `.NET 8`, `.NET 9` y `.NET 10` mediante *roll-forward*).
+CajitaPaaS incluye el runtime oficial **.NET 10 + ASP.NET Core 10 (ARM64 Alpine)** (compatible con `.NET 6`, `.NET 7`, `.NET 8`, `.NET 9` y `.NET 10` mediante _roll-forward_).
 
 1. En tu PC, dentro de la carpeta del proyecto (donde está tu archivo `.csproj`), ejecuta:
    ```bash
@@ -258,6 +259,7 @@ Puedes administrar tus bases de datos, crear tablas, importar dumps `.sql` o rev
 ### 📥 Exportar Backup (`.SQL`) e 📤 Importar Archivos `.SQL` desde el Navegador
 
 Sin necesidad de abrir DBeaver en una PC, en la pestaña **🗄️ 2. Mis Bases de Datos y Modo PC** del Panel Web dispones de:
+
 - **📥 Descargar Backup (.SQL)**: Genera un archivo `<base>_backup.sql` completo con todas las estructuras `CREATE TABLE` y los registros `INSERT INTO` de cualquier base de datos con un solo clic.
 - **📤 Importar Archivo (.SQL)**: Sube un archivo `.sql` desde tu celular o computadora para crear tablas y poblar datos automáticamente en la base de datos que elijas.
 
@@ -311,7 +313,7 @@ CajitaPaaS incluye `cloudflared` nativo para publicar tus proyectos en Internet 
 - **Opción 1 — Túnel Rápido Gratis (`*.trycloudflare.com`)**: No requiere cuenta ni configuración; al iniciar la app genera una URL HTTPS temporal automáticamente.
 - **Opción 2 — Dominio Fijo Propio con Token de Cloudflare Zero Trust**:
   1. Delega los DNS (Nameservers) de tu dominio propio (ej. `midominio.com`) a una cuenta gratuita de **Cloudflare**.
-  2. En **Cloudflare Zero Trust** (`Networks → Tunnels`), crea un túnel tipo *Cloudflared*, copia el **Token** (`eyJhIjoi...`) y en **Public Hostname** apunta tu dominio o subdominio (ej. `app.midominio.com`) hacia `HTTP://127.0.0.1:8080`.
+  2. En **Cloudflare Zero Trust** (`Networks → Tunnels`), crea un túnel tipo _Cloudflared_, copia el **Token** (`eyJhIjoi...`) y en **Public Hostname** apunta tu dominio o subdominio (ej. `app.midominio.com`) hacia `HTTP://127.0.0.1:8080`.
   3. Pega el dominio y el token en CajitaPaaS, elige el protocolo (`HTTP/2` recomendado en móviles o `QUIC`) y guarda. El panel verificará la conexión real con Cloudflare (`Registered tunnel connection`) y mostrará logs y posibles errores en vivo.
 
 ---
