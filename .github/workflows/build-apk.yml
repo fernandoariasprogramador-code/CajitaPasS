@@ -33,6 +33,11 @@ jobs:
           unzip -q /tmp/gradle-8.9.zip -d /tmp/gradle-dist
           echo "/tmp/gradle-dist/gradle-8.9/bin" >> $GITHUB_PATH
 
+      - name: 3.5 Configurar QEMU ARM64 para compilar host nativo .NET
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: 4. Empaquetar Panel Web CPS, Cloudflared y Motor Real MariaDB Alpine (ARM64)
         run: |
           set -e
@@ -56,7 +61,7 @@ jobs:
           sed -i 's/\r$//' scripts/build_mariadb_alpine_arm64.sh scripts/build_dotnet_alpine_arm64.sh
           chmod 755 scripts/build_mariadb_alpine_arm64.sh scripts/build_dotnet_alpine_arm64.sh
 
-          # Extraer binarios ARM64 (aarch64) e inicializar datadir oficial de MariaDB Alpine + .NET 8 Runtime
+          # Extraer binarios ARM64 (aarch64) e inicializar datadir oficial de MariaDB Alpine + .NET 10 Runtime
           set -o pipefail
           docker run --rm \
             -v "$PWD:/workspace" \
@@ -66,6 +71,11 @@ jobs:
               done
               exit 1
             }
+
+          # Compilar host nativo ARM64 para .NET (evita verificación de /proc/self/exe en musl)
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/workspace" \
+            alpine:3.20 /bin/sh -c "apk add --no-cache gcc musl-dev && gcc -O2 -fPIE -pie /workspace/scripts/cps_dotnet_host.c -o /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_dotnet_host.so -ldl && chmod 755 /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_dotnet_host.so"
 
       - name: 5. Compilar APK (CajitaPaaS ARM64)
         working-directory: ./android

@@ -744,21 +744,28 @@ class EmbeddedControlPlaneServer(
 
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val muslLinker = File(nativeLibDir, "libalpine_musl.so")
+        val customHostBin = File(nativeLibDir, "libcps_dotnet_host.so")
         val dotnetBin = File(nativeLibDir, "libdotnet.so")
-        if (!muslLinker.exists() || !dotnetBin.exists()) {
-            appendAppLog(appName, "[CPS-DotNet] ❌ El runtime .NET 8 (libdotnet.so) no está empaquetado en esta APK.")
-            Log.w(TAG, "Binario libdotnet.so no disponible para iniciar '$appName'")
+        val launcherBin = if (customHostBin.exists()) customHostBin else dotnetBin
+        if (!muslLinker.exists() || !launcherBin.exists()) {
+            appendAppLog(appName, "[CPS-DotNet] ❌ El runtime .NET 10 no está empaquetado en esta APK.")
+            Log.w(TAG, "Binario .NET no disponible para iniciar '$appName'")
             return
         }
 
         val dotnetRootPath = dbEngine.ensureDotnetRuntimeExtracted()
         if (dotnetRootPath == null) {
-            appendAppLog(appName, "[CPS-DotNet] ❌ No se pudo inicializar el entorno .NET 8 ARM64.")
+            appendAppLog(appName, "[CPS-DotNet] ❌ No se pudo inicializar el entorno .NET 10 ARM64.")
             return
         }
 
+        val hostfxrSo = File(dotnetRootPath, "host/fxr")
+            .listFiles()
+            ?.firstOrNull { File(it, "libhostfxr.so").exists() }
+            ?.let { File(it, "libhostfxr.so") }
+
         runCatching { Os.chmod(muslLinker.absolutePath, 493) }
-        runCatching { Os.chmod(dotnetBin.absolutePath, 493) }
+        runCatching { Os.chmod(launcherBin.absolutePath, 493) }
 
         val libSearchPath = dbEngine.getLibSearchPath()
         val projects = loadSavedProjects()
@@ -772,7 +779,7 @@ class EmbeddedControlPlaneServer(
             "$dotnetRootPath/dotnet",
             "--library-path",
             libSearchPath,
-            dotnetBin.absolutePath,
+            launcherBin.absolutePath,
             "--roll-forward",
             "Major",
             dllFile.absolutePath,
@@ -815,6 +822,11 @@ class EmbeddedControlPlaneServer(
         val dbUser = dbEngine.getDbUser()
         val dbPass = dbEngine.getDbPassword()
 
+        env["CPS_DOTNET_ROOT"] = dotnetRootPath
+        env["CPS_DOTNET_HOST_PATH"] = "$dotnetRootPath/dotnet"
+        if (hostfxrSo != null && hostfxrSo.exists()) {
+            env["CPS_DOTNET_HOSTFXR_PATH"] = hostfxrSo.absolutePath
+        }
         env["DOTNET_ROOT"] = dotnetRootPath
         env["DOTNET_EnableWriteXorExecute"] = "0"
         env["COMPlus_EnableWriteXorExecute"] = "0"
