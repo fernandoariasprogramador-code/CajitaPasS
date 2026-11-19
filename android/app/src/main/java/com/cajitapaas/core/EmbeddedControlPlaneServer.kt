@@ -773,21 +773,36 @@ class EmbeddedControlPlaneServer(
         val appMaxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb()).coerceIn(64, 2048)
         val gcHeapHex = (appMaxRamMb.toLong() * 1024L * 1024L).toString(16)
 
-        val args = listOf(
-            muslLinker.absolutePath,
-            "--argv0",
-            "$dotnetRootPath/dotnet",
-            "--library-path",
-            libSearchPath,
-            launcherBin.absolutePath,
-            "--roll-forward",
-            "Major",
-            dllFile.absolutePath,
-            "--urls",
-            "http://127.0.0.1:$internalPort",
-            "--contentRoot",
-            contentRoot.absolutePath
-        )
+        val args = if (customHostBin.exists()) {
+            listOf(
+                muslLinker.absolutePath,
+                "--argv0",
+                "$dotnetRootPath/dotnet",
+                "--library-path",
+                libSearchPath,
+                launcherBin.absolutePath,
+                "--urls",
+                "http://127.0.0.1:$internalPort",
+                "--contentRoot",
+                contentRoot.absolutePath
+            )
+        } else {
+            listOf(
+                muslLinker.absolutePath,
+                "--argv0",
+                "$dotnetRootPath/dotnet",
+                "--library-path",
+                libSearchPath,
+                launcherBin.absolutePath,
+                "--roll-forward",
+                "Major",
+                dllFile.absolutePath,
+                "--urls",
+                "http://127.0.0.1:$internalPort",
+                "--contentRoot",
+                contentRoot.absolutePath
+            )
+        }
 
         val pb = ProcessBuilder(args)
             .directory(contentRoot)
@@ -824,10 +839,12 @@ class EmbeddedControlPlaneServer(
 
         env["CPS_DOTNET_ROOT"] = dotnetRootPath
         env["CPS_DOTNET_HOST_PATH"] = "$dotnetRootPath/dotnet"
+        env["CPS_DOTNET_APP_PATH"] = dllFile.absolutePath
         if (hostfxrSo != null && hostfxrSo.exists()) {
             env["CPS_DOTNET_HOSTFXR_PATH"] = hostfxrSo.absolutePath
         }
         env["DOTNET_ROOT"] = dotnetRootPath
+        env["DOTNET_ROLL_FORWARD"] = "Major"
         env["DOTNET_EnableWriteXorExecute"] = "0"
         env["COMPlus_EnableWriteXorExecute"] = "0"
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"

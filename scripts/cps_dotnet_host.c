@@ -13,10 +13,11 @@ typedef int (*hostfxr_main_startupinfo_fn)(
 int main(int argc, char** argv) {
     const char* dotnet_root = getenv("CPS_DOTNET_ROOT");
     const char* host_path = getenv("CPS_DOTNET_HOST_PATH");
+    const char* app_path = getenv("CPS_DOTNET_APP_PATH");
     const char* fxr_path = getenv("CPS_DOTNET_HOSTFXR_PATH");
 
-    if (!dotnet_root || !host_path || !fxr_path) {
-        fprintf(stderr, "[CPS-DotNetHost] Missing CPS_DOTNET_ROOT / CPS_DOTNET_HOST_PATH / CPS_DOTNET_HOSTFXR_PATH\n");
+    if (!dotnet_root || !host_path || !app_path || !fxr_path) {
+        fprintf(stderr, "[CPS-DotNetHost] Missing CPS_DOTNET_ROOT / CPS_DOTNET_HOST_PATH / CPS_DOTNET_APP_PATH / CPS_DOTNET_HOSTFXR_PATH\n");
         return 1;
     }
 
@@ -33,7 +34,5 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    /* app_path = NULL makes hostfxr behave identically to `dotnet` CLI */
-    return main_fn(argc, (const char**)argv, host_path, dotnet_root, NULL);
+    return main_fn(argc, (const char**)argv, host_path, dotnet_root, app_path);
 }
-
