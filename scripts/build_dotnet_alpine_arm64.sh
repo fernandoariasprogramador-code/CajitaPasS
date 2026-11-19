@@ -84,7 +84,26 @@ find . -type f -o -type l | while IFS= read -r rel_raw; do
 
   base=$(basename "$rel")
   case "$base" in
-    *.so|*.so.*)
+    *.so)
+      apk_so="$base"
+      case "$apk_so" in
+        lib*) ;;
+        *) apk_so="libdotnet_${apk_so}" ;;
+      esac
+      if [ -f "$JNI_DIR/$apk_so" ]; then
+        existing_hash=$(sha256sum "$JNI_DIR/$apk_so" | awk '{print $1}')
+        new_hash=$(sha256sum "$DOTNET_SRC/$rel" | awk '{print $1}')
+        if [ "$existing_hash" != "$new_hash" ]; then
+          dir_tag=$(echo "$rel" | md5sum | cut -c1-6)
+          clean_name=$(echo "${base#lib}" | tr -c 'a-zA-Z0-9_' '_')
+          apk_so="libdotnet_${clean_name}_${dir_tag}.so"
+        fi
+      fi
+      cp -L "$DOTNET_SRC/$rel" "$JNI_DIR/$apk_so"
+      chmod 755 "$JNI_DIR/$apk_so"
+      echo "$rel=$apk_so" >> "$STAGE_DIR/dotnet_so_map.txt"
+      ;;
+    *.so.*)
       clean_name=$(echo "${base#lib}" | tr -c 'a-zA-Z0-9_' '_')
       apk_so="libdotnet_${clean_name}.so"
       if [ -f "$JNI_DIR/$apk_so" ]; then
