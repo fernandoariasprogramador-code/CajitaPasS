@@ -847,6 +847,10 @@ class EmbeddedControlPlaneServer(
         env["DOTNET_ROLL_FORWARD"] = "Major"
         env["DOTNET_EnableWriteXorExecute"] = "0"
         env["COMPlus_EnableWriteXorExecute"] = "0"
+        env["DOTNET_EnableDiagnostics"] = env["DOTNET_EnableDiagnostics"] ?: "0"
+        env["COMPlus_EnableDiagnostics"] = env["COMPlus_EnableDiagnostics"] ?: "0"
+        env["DOTNET_GCServer"] = env["DOTNET_GCServer"] ?: "0"
+        env["COMPlus_gcServer"] = env["COMPlus_gcServer"] ?: "0"
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
         env["DOTNET_NOLOGO"] = "1"
         env["DOTNET_GCHeapHardLimit"] = gcHeapHex
