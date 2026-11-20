@@ -1,7 +1,10 @@
 package com.cajitapaas.core
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.StatFs
 import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -68,6 +71,10 @@ class EmbeddedControlPlaneServer(
     private val intentionallyStoppedApps = ConcurrentHashMap.newKeySet<String>()
     private val appRestartCounts = ConcurrentHashMap<String, Int>()
     private val appWatchdogState = ConcurrentHashMap<String, String>()
+    private val appStartTimes = ConcurrentHashMap<String, Long>()
+    private val appCpuSamples = ConcurrentHashMap<String, Pair<Long, Long>>()
+    @Volatile
+    private var mariadbCpuSample: Pair<Long, Long>? = null
     private val executor = Executors.newCachedThreadPool()
 
     private fun getDefaultMaxRamMb(): Int {
@@ -454,9 +461,11 @@ class EmbeddedControlPlaneServer(
         val projects = loadSavedProjects()
         val appConfig = projects.optJSONObject(appName)
         val appMaxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb()).coerceIn(64, 2048)
+        val cpuPriorityNice = (appConfig?.optInt("cpuPriorityNice", 0) ?: 0).coerceIn(0, 19)
+        val workerThreads = (appConfig?.optInt("workerThreads", 4) ?: 4).coerceIn(1, 16)
 
         val localNodeModules = File(appRoot, "node_modules").absolutePath
-        val args = listOf(
+        val baseArgs = mutableListOf(
             muslLinker.absolutePath,
             "--library-path",
             libSearchPath,
@@ -467,6 +476,11 @@ class EmbeddedControlPlaneServer(
             preloadFile.absolutePath,
             entryScript.absolutePath
         )
+        val args = if (cpuPriorityNice > 0 && File("/system/bin/nice").exists()) {
+            listOf("/system/bin/nice", "-n", cpuPriorityNice.toString()) + baseArgs
+        } else {
+            baseArgs
+        }
 
         val pb = ProcessBuilder(args)
             .directory(entryScript.parentFile ?: appRoot)
@@ -499,6 +513,7 @@ class EmbeddedControlPlaneServer(
         env["NODE_ENV"] = env["NODE_ENV"]?.takeIf { it.isNotBlank() } ?: "production"
         env["NODE_PATH"] = "$localNodeModules:$sharedNodeModules:$globalNodeModules"
         env["LD_LIBRARY_PATH"] = libSearchPath
+        env["UV_THREADPOOL_SIZE"] = workerThreads.toString()
         env["HOME"] = appRoot.absolutePath
         env["TMPDIR"] = context.cacheDir.absolutePath
 
@@ -530,7 +545,9 @@ class EmbeddedControlPlaneServer(
         env["DATABASE_NAME"] = effectiveDb
 
         appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+        appCpuSamples.remove(appName)
         val startTimestamp = System.currentTimeMillis()
+        appStartTimes[appName] = startTimestamp
         val proc = pb.start()
         appProcesses[appName] = proc
         appWatchdogState[appName] = "running"
@@ -771,9 +788,11 @@ class EmbeddedControlPlaneServer(
         val projects = loadSavedProjects()
         val appConfig = projects.optJSONObject(appName)
         val appMaxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb()).coerceIn(64, 2048)
+        val cpuCoresLimit = (appConfig?.optInt("cpuCoresLimit", 0) ?: 0).coerceIn(0, Runtime.getRuntime().availableProcessors())
+        val cpuPriorityNice = (appConfig?.optInt("cpuPriorityNice", 0) ?: 0).coerceIn(0, 19)
         val gcHeapHex = (appMaxRamMb.toLong() * 1024L * 1024L).toString(16)
 
-        val args = if (customHostBin.exists()) {
+        val baseArgs = if (customHostBin.exists()) {
             listOf(
                 muslLinker.absolutePath,
                 "--argv0",
@@ -802,6 +821,12 @@ class EmbeddedControlPlaneServer(
                 "--contentRoot",
                 contentRoot.absolutePath
             )
+        }
+
+        val args = if (cpuPriorityNice > 0 && File("/system/bin/nice").exists()) {
+            listOf("/system/bin/nice", "-n", cpuPriorityNice.toString()) + baseArgs
+        } else {
+            baseArgs
         }
 
         val pb = ProcessBuilder(args)
@@ -854,6 +879,9 @@ class EmbeddedControlPlaneServer(
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
         env["DOTNET_NOLOGO"] = "1"
         env["DOTNET_GCHeapHardLimit"] = gcHeapHex
+        if (cpuCoresLimit > 0) {
+            env["DOTNET_PROCESSOR_COUNT"] = cpuCoresLimit.toString()
+        }
         env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = env["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] ?: "1"
         env["ASPNETCORE_URLS"] = "http://127.0.0.1:$internalPort"
         env["URLS"] = "http://127.0.0.1:$internalPort"
@@ -876,7 +904,9 @@ class EmbeddedControlPlaneServer(
         }
 
         appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+        appCpuSamples.remove(appName)
         val startTimestamp = System.currentTimeMillis()
+        appStartTimes[appName] = startTimestamp
         val proc = pb.start()
         appProcesses[appName] = proc
         appWatchdogState[appName] = "running"
@@ -1184,7 +1214,9 @@ class EmbeddedControlPlaneServer(
             path.startsWith("/api/v1/db/") ||
             path.startsWith("/api/v1/tunnel/") ||
             path.startsWith("/api/v1/network/") ||
-            path.startsWith("/api/v1/runtime/")
+            path.startsWith("/api/v1/runtime/") ||
+            path == "/api/v1/resources" ||
+            path.startsWith("/api/v1/resources/")
     }
 
     private fun sendAppStatusJson(appName: String, appPort: Int, out: OutputStream) {
@@ -2252,7 +2284,6 @@ class EmbeddedControlPlaneServer(
 
             executor.execute {
                 runCatching { dbEngine.applyInnoDbBufferPoolSize(innoDbBufferMb) }
-                // Reiniciar procesos Node activos para aplicar el nuevo --max-old-space-size
                 val keys = projectsObj.keys()
                 while (keys.hasNext()) {
                     val appName = keys.next()
@@ -2260,6 +2291,7 @@ class EmbeddedControlPlaneServer(
                     val p = info.optInt("activePort", 3001)
                     if (appProcesses.containsKey(appName)) {
                         appRestartCounts[appName] = 0
+                        appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
                         startAppNodeProcessIfPresent(appName, p)
                     }
                 }
@@ -2272,6 +2304,110 @@ class EmbeddedControlPlaneServer(
                     .put("status", "success")
                     .put("message", "Configuración de Modo Experto guardada y aplicada a los servicios.")
                     .put("expertConfig", buildExpertConfigJson())
+                    .toString()
+            )
+        }
+
+        // Monitor y Gestor de Recursos del Sistema y por Aplicación
+        if (path == "/api/v1/resources" && method == "GET") {
+            return sendJson(out, 200, buildResourcesSnapshotJson().toString())
+        }
+
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/resources") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/resources").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val projectsObj = loadSavedProjects()
+            val appInfo = projectsObj.optJSONObject(appName)
+                ?: return sendJson(out, 404, JSONObject().put("error", "Aplicación '$appName' no encontrada.").toString())
+
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val cpuCoresMax = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+
+            if (json.has("maxRamMb")) {
+                val ram = json.optInt("maxRamMb", getDefaultMaxRamMb())
+                if (ram >= 64) {
+                    appInfo.put("maxRamMb", ram.coerceIn(64, 2048))
+                } else {
+                    appInfo.remove("maxRamMb")
+                }
+            }
+            if (json.has("cpuCoresLimit")) {
+                val cores = json.optInt("cpuCoresLimit", 0).coerceIn(0, cpuCoresMax)
+                appInfo.put("cpuCoresLimit", cores)
+            }
+            if (json.has("cpuPriorityNice")) {
+                val nice = json.optInt("cpuPriorityNice", 0).coerceIn(0, 19)
+                appInfo.put("cpuPriorityNice", nice)
+            }
+            if (json.has("workerThreads")) {
+                val workers = json.optInt("workerThreads", 4).coerceIn(1, 16)
+                appInfo.put("workerThreads", workers)
+            }
+            if (json.has("maxDiskMb")) {
+                val diskLimit = json.optInt("maxDiskMb", 0).coerceIn(0, 10240)
+                appInfo.put("maxDiskMb", diskLimit)
+            }
+
+            projectsObj.put(appName, appInfo)
+            saveProjects(projectsObj)
+
+            val shouldRestart = json.optBoolean("restartToApply", true)
+            val appPort = appInfo.optInt("activePort", 3001)
+            val role = appInfo.optString("appRole", "frontend")
+
+            if (shouldRestart && role != "frontend") {
+                appRestartCounts[appName] = 0
+                appendAppLog(
+                    appName,
+                    "[CPS-Resources] 🎛️ Recursos actualizados (RAM máx: ${appInfo.optInt("maxRamMb", getDefaultMaxRamMb())}MB · Núcleos: ${if (appInfo.optInt("cpuCoresLimit", 0) == 0) "Todos" else appInfo.optInt("cpuCoresLimit")} · Prioridad nice: ${appInfo.optInt("cpuPriorityNice", 0)}). Reiniciando..."
+                )
+                intentionallyStoppedApps.remove(appName)
+                appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+                startDedicatedAppServer(appName, appPort)
+            }
+
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put("status", "success")
+                    .put("message", "Recursos de '$appName' actualizados correctamente.")
+                    .put("resources", buildResourcesSnapshotJson())
+                    .toString()
+            )
+        }
+
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/resources/toggle") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/resources/toggle").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val projectsObj = loadSavedProjects()
+            val appInfo = projectsObj.optJSONObject(appName)
+                ?: return sendJson(out, 404, JSONObject().put("error", "Aplicación '$appName' no encontrada.").toString())
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val active = json.optBoolean("active", true)
+            val appPort = appInfo.optInt("activePort", 3001)
+
+            if (active) {
+                intentionallyStoppedApps.remove(appName)
+                appRestartCounts[appName] = 0
+                appWatchdogState[appName] = "running"
+                appendAppLog(appName, "[CPS-Resources] ▶️ Proceso reanudado por el usuario para usar recursos.")
+                startAppNodeProcessIfPresent(appName, appPort)
+            } else {
+                intentionallyStoppedApps.add(appName)
+                appWatchdogState[appName] = "paused"
+                appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+                appCpuSamples.remove(appName)
+                appendAppLog(appName, "[CPS-Resources] ⏸️ Proceso pausado por el usuario para liberar RAM y CPU.")
+            }
+
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put("status", "success")
+                    .put("message", if (active) "Proceso de '$appName' iniciado." else "Proceso de '$appName' pausado (RAM liberada).")
+                    .put("resources", buildResourcesSnapshotJson())
                     .toString()
             )
         }
@@ -2368,8 +2504,10 @@ class EmbeddedControlPlaneServer(
                 .put("pid", 4200 + (projectsObj.length() * 17))
                 .put("memoryMb", if (appRole == "frontend") 38 else 54)
 
-            if (existing?.has("maxRamMb") == true) {
-                slotInfo.put("maxRamMb", existing.optInt("maxRamMb"))
+            for (resKey in listOf("maxRamMb", "cpuCoresLimit", "cpuPriorityNice", "workerThreads", "maxDiskMb")) {
+                if (existing?.has(resKey) == true) {
+                    slotInfo.put(resKey, existing.optInt(resKey))
+                }
             }
 
             val effectiveAppDb = when {
@@ -3634,5 +3772,269 @@ class EmbeddedControlPlaneServer(
             if (r <= 0) break
             remaining -= r
         }
+    }
+
+    // ========================================================================
+    // TELEMETRÍA Y GESTIÓN DE RECURSOS (RAM / CPU / DISCO POR APP Y HOST)
+    // ========================================================================
+
+    private data class ProcTelemetry(
+        val rssMb: Double = 0.0,
+        val peakRssMb: Double = 0.0,
+        val threads: Int = 0,
+        val cpuTicks: Long = -1L
+    )
+
+    private fun extractProcessPid(proc: Process?): Int {
+        if (proc == null || !proc.isAlive) return -1
+        runCatching {
+            val f = proc.javaClass.getDeclaredField("pid")
+            f.isAccessible = true
+            val p = f.getInt(proc)
+            if (p > 0) return p
+        }
+        val m = Regex("pid=(\\d+)").find(proc.toString())
+        return m?.groupValues?.getOrNull(1)?.toIntOrNull() ?: -1
+    }
+
+    private fun readProcTelemetry(pid: Int): ProcTelemetry {
+        if (pid <= 0) return ProcTelemetry()
+        var rssKb = 0L
+        var peakKb = 0L
+        var threads = 0
+        runCatching {
+            val statusFile = File("/proc/$pid/status")
+            if (statusFile.exists() && statusFile.canRead()) {
+                statusFile.forEachLine { line ->
+                    when {
+                        line.startsWith("VmRSS:") -> {
+                            rssKb = line.substringAfter(":").trim().substringBefore(" ").toLongOrNull() ?: 0L
+                        }
+                        line.startsWith("VmHWM:") -> {
+                            peakKb = line.substringAfter(":").trim().substringBefore(" ").toLongOrNull() ?: 0L
+                        }
+                        line.startsWith("Threads:") -> {
+                            threads = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                        }
+                    }
+                }
+            }
+        }
+
+        var cpuTicks = -1L
+        runCatching {
+            val statFile = File("/proc/$pid/stat")
+            if (statFile.exists() && statFile.canRead()) {
+                val content = statFile.readText()
+                val rparen = content.lastIndexOf(')')
+                if (rparen > 0 && rparen + 2 < content.length) {
+                    val fields = content.substring(rparen + 2).trim().split(Regex("\\s+"))
+                    // Después de ')' index 11 = utime, index 12 = stime
+                    val utime = fields.getOrNull(11)?.toLongOrNull() ?: 0L
+                    val stime = fields.getOrNull(12)?.toLongOrNull() ?: 0L
+                    cpuTicks = utime + stime
+                }
+            }
+        }
+
+        val rssMb = Math.round((rssKb / 1024.0) * 10.0) / 10.0
+        val peakMb = Math.round((peakKb / 1024.0) * 10.0) / 10.0
+        return ProcTelemetry(rssMb = rssMb, peakRssMb = peakMb, threads = threads, cpuTicks = cpuTicks)
+    }
+
+    private fun computeCpuPercentFromSamples(
+        prevSample: Pair<Long, Long>?,
+        currentTicks: Long,
+        cpuCores: Int
+    ): Pair<Double, Pair<Long, Long>?> {
+        val nowMs = System.currentTimeMillis()
+        if (currentTicks < 0L) return 0.0 to null
+        val newSample = nowMs to currentTicks
+        if (prevSample == null) return 0.0 to newSample
+
+        val deltaMs = (nowMs - prevSample.first).coerceAtLeast(1L)
+        val deltaTicks = (currentTicks - prevSample.second).coerceAtLeast(0L)
+        val hz = runCatching { Os.sysconf(OsConstants._SC_CLK_TCK).toDouble() }.getOrDefault(100.0).coerceAtLeast(1.0)
+        val deltaSeconds = deltaMs / 1000.0
+        val rawPct = (deltaTicks.toDouble() / hz) / (deltaSeconds * cpuCores.coerceAtLeast(1)) * 100.0
+        val rounded = Math.round(rawPct.coerceIn(0.0, 100.0) * 10.0) / 10.0
+        return rounded to newSample
+    }
+
+    private fun computeDirSizeBytes(dir: File): Long {
+        if (!dir.exists()) return 0L
+        var total = 0L
+        runCatching {
+            dir.walkTopDown()
+                .onEnter { sub -> !java.nio.file.Files.isSymbolicLink(sub.toPath()) }
+                .filter { f -> !java.nio.file.Files.isSymbolicLink(f.toPath()) && f.isFile }
+                .forEach { total += it.length() }
+        }
+        return total
+    }
+
+    private fun buildResourcesSnapshotJson(): JSONObject {
+        val nowMs = System.currentTimeMillis()
+        val cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+
+        // 1. Memoria RAM real del teléfono Android
+        var totalRamMb = 0.0
+        var freeRamMb = 0.0
+        var lowMemory = false
+        runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            if (am != null) {
+                val mi = ActivityManager.MemoryInfo()
+                am.getMemoryInfo(mi)
+                totalRamMb = Math.round((mi.totalMem / (1024.0 * 1024.0)) * 10.0) / 10.0
+                freeRamMb = Math.round((mi.availMem / (1024.0 * 1024.0)) * 10.0) / 10.0
+                lowMemory = mi.lowMemory
+            }
+        }
+        val usedRamMb = Math.round((totalRamMb - freeRamMb).coerceAtLeast(0.0) * 10.0) / 10.0
+        val ramUsagePct = if (totalRamMb > 0.0) Math.round((usedRamMb / totalRamMb) * 1000.0) / 10.0 else 0.0
+
+        // 2. Almacenamiento real de la partición interna
+        var totalDiskMb = 0.0
+        var freeDiskMb = 0.0
+        runCatching {
+            val statFs = StatFs(context.filesDir.absolutePath)
+            totalDiskMb = Math.round((statFs.totalBytes / (1024.0 * 1024.0)) * 10.0) / 10.0
+            freeDiskMb = Math.round((statFs.availableBytes / (1024.0 * 1024.0)) * 10.0) / 10.0
+        }
+        val usedDiskMb = Math.round((totalDiskMb - freeDiskMb).coerceAtLeast(0.0) * 10.0) / 10.0
+        val diskUsagePct = if (totalDiskMb > 0.0) Math.round((usedDiskMb / totalDiskMb) * 1000.0) / 10.0 else 0.0
+
+        // 3. Consumo del proceso padre (CajitaPaaS Control Plane Android)
+        val selfTelemetry = readProcTelemetry(android.os.Process.myPid())
+
+        // 4. Consumo del demonio MariaDB Alpine
+        val mdbPid = dbEngine.getMariaDbProcessPid()
+        val mdbTelemetry = readProcTelemetry(mdbPid)
+        val (mdbCpuPct, newMdbSample) = computeCpuPercentFromSamples(mariadbCpuSample, mdbTelemetry.cpuTicks, cpuCores)
+        if (newMdbSample != null) mariadbCpuSample = newMdbSample
+        val mdbDiskMb = Math.round((dbEngine.getMariaDbDataSizeBytes() / (1024.0 * 1024.0)) * 10.0) / 10.0
+
+        // 5. Telemetría detallada de cada aplicación desplegada
+        val projectsObj = loadSavedProjects()
+        val appsArr = JSONArray()
+        var allocatedRamSum = 0.0
+        var appsRamUsedSum = 0.0
+        var appsDiskUsedSum = 0.0
+
+        val keys = projectsObj.keys()
+        while (keys.hasNext()) {
+            val appName = keys.next()
+            val info = projectsObj.optJSONObject(appName) ?: continue
+            val role = info.optString("appRole", "frontend")
+            val appPort = info.optInt("activePort", 3001)
+            val maxRamMb = (info.optInt("maxRamMb", 0).takeIf { it >= 64 } ?: getDefaultMaxRamMb())
+            val cpuCoresLimit = info.optInt("cpuCoresLimit", 0).coerceIn(0, cpuCores)
+            val cpuPriorityNice = info.optInt("cpuPriorityNice", 0).coerceIn(0, 19)
+            val workerThreads = info.optInt("workerThreads", 4).coerceIn(1, 16)
+            val maxDiskMb = info.optInt("maxDiskMb", 0).coerceIn(0, 10240)
+
+            val appDir = File(deployedAppsBaseDir, appName)
+            val appRoot = resolveEffectiveAppRoot(appDir)
+            val isNode = findNodeEntryScript(appRoot) != null
+            val isDotnet = !isNode && findDotnetEntryAssembly(appRoot) != null
+            val runtimeName = when {
+                isDotnet -> ".NET 10 ARM64"
+                isNode -> "Node.js v20 ARM64"
+                else -> "Estático / HTML"
+            }
+
+            val proc = appProcesses[appName]
+            val alive = proc?.isAlive == true || isLocalPortOpen(appPort + 10000, 60)
+            val pid = extractProcessPid(proc)
+            val procTel = readProcTelemetry(pid)
+            val (cpuPct, newSample) = computeCpuPercentFromSamples(appCpuSamples[appName], procTel.cpuTicks, cpuCores)
+            if (newSample != null) {
+                appCpuSamples[appName] = newSample
+            } else {
+                appCpuSamples.remove(appName)
+            }
+
+            val diskUsedMb = Math.round((computeDirSizeBytes(appDir) / (1024.0 * 1024.0)) * 10.0) / 10.0
+            appsDiskUsedSum += diskUsedMb
+
+            val ramUsedMb = if (role == "frontend" && !isNode && !isDotnet) 0.0 else procTel.rssMb
+            appsRamUsedSum += ramUsedMb
+            if (role != "frontend" || isNode || isDotnet) {
+                allocatedRamSum += maxRamMb
+            }
+
+            val ramFreeInQuotaMb = Math.round((maxRamMb - ramUsedMb).coerceAtLeast(0.0) * 10.0) / 10.0
+            val ramQuotaPct = if (maxRamMb > 0) Math.round(((ramUsedMb / maxRamMb) * 100.0).coerceIn(0.0, 100.0) * 10.0) / 10.0 else 0.0
+            val diskFreeInQuotaMb = if (maxDiskMb > 0) Math.round((maxDiskMb - diskUsedMb).coerceAtLeast(0.0) * 10.0) / 10.0 else -1.0
+
+            val startedAt = appStartTimes[appName] ?: 0L
+            val uptimeSeconds = if (alive && startedAt > 0L) ((nowMs - startedAt) / 1000L).coerceAtLeast(0L) else 0L
+
+            appsArr.put(
+                JSONObject()
+                    .put("appName", appName)
+                    .put("role", role)
+                    .put("runtime", runtimeName)
+                    .put("port", appPort)
+                    .put("pid", pid)
+                    .put("alive", alive)
+                    .put("paused", intentionallyStoppedApps.contains(appName))
+                    .put("watchdogState", appWatchdogState[appName] ?: if (alive) "running" else "idle")
+                    .put("restartCount", appRestartCounts[appName] ?: 0)
+                    .put("uptimeSeconds", uptimeSeconds)
+                    .put("ramUsedMb", ramUsedMb)
+                    .put("ramPeakMb", procTel.peakRssMb)
+                    .put("ramLimitMb", maxRamMb)
+                    .put("ramFreeInQuotaMb", ramFreeInQuotaMb)
+                    .put("ramQuotaPct", ramQuotaPct)
+                    .put("cpuPercent", cpuPct)
+                    .put("threads", procTel.threads)
+                    .put("cpuCoresLimit", cpuCoresLimit)
+                    .put("cpuPriorityNice", cpuPriorityNice)
+                    .put("workerThreads", workerThreads)
+                    .put("diskUsedMb", diskUsedMb)
+                    .put("diskLimitMb", maxDiskMb)
+                    .put("diskFreeInQuotaMb", diskFreeInQuotaMb)
+            )
+        }
+
+        val unassignedRamMb = Math.round((freeRamMb - (allocatedRamSum - appsRamUsedSum).coerceAtLeast(0.0)).coerceAtLeast(0.0) * 10.0) / 10.0
+        val sharedStoreMb = Math.round((computeDirSizeBytes(File(dbEngine.getSharedNodeModulesPath())) / (1024.0 * 1024.0)) * 10.0) / 10.0
+
+        val hostObj = JSONObject()
+            .put("totalRamMb", totalRamMb)
+            .put("usedRamMb", usedRamMb)
+            .put("freeRamMb", freeRamMb)
+            .put("ramUsagePct", ramUsagePct)
+            .put("lowMemory", lowMemory)
+            .put("allocatedRamMb", Math.round(allocatedRamSum * 10.0) / 10.0)
+            .put("appsRamUsedMb", Math.round(appsRamUsedSum * 10.0) / 10.0)
+            .put("availableToAllocateMb", unassignedRamMb)
+            .put("cpuCores", cpuCores)
+            .put("controlPlaneRamMb", selfTelemetry.rssMb)
+            .put("controlPlaneThreads", selfTelemetry.threads)
+            .put("totalDiskMb", totalDiskMb)
+            .put("usedDiskMb", usedDiskMb)
+            .put("freeDiskMb", freeDiskMb)
+            .put("diskUsagePct", diskUsagePct)
+            .put("appsDiskUsedMb", Math.round(appsDiskUsedSum * 10.0) / 10.0)
+            .put("sharedStoreDiskMb", sharedStoreMb)
+
+        val mariadbObj = JSONObject()
+            .put("healthy", dbEngine.isDaemonHealthy())
+            .put("pid", mdbPid)
+            .put("ramUsedMb", mdbTelemetry.rssMb)
+            .put("ramPeakMb", mdbTelemetry.peakRssMb)
+            .put("innoDbBufferMb", dbEngine.getInnoDbBufferPoolMb())
+            .put("cpuPercent", mdbCpuPct)
+            .put("threads", mdbTelemetry.threads)
+            .put("diskUsedMb", mdbDiskMb)
+            .put("activeConnections", dbEngine.getActiveConnectionsCount())
+
+        return JSONObject()
+            .put("host", hostObj)
+            .put("mariadb", mariadbObj)
+            .put("apps", appsArr)
     }
 }

@@ -141,11 +141,14 @@ CajitaPaaS incluye el runtime oficial **.NET 10 + ASP.NET Core 10 (ARM64 Alpine)
 
 Cada aplicación Backend encendida cuenta con controles instantáneos en su tarjeta:
 
-- **📜 Consola en Vivo**: Abre una terminal en tiempo real que muestra las salidas `console.log()`, errores, estado del proceso Node.js, límite de memoria RAM y contador de reinicios. Permite limpiar la consola o reiniciar la app con 1 clic.
-- **⚙️ Variables `.env` (Editor Visual)**: Lee y muestra todas las variables que trae el archivo `.env` de tu proyecto (o las variables por defecto inyectadas por CPS). Puedes editar valores, agregar nuevas claves o alternar al modo texto crudo; al guardar, el backend se reinicia en 1 segundo con los nuevos valores.
+- **📜 Consola en Vivo**: Abre una terminal en tiempo real que muestra las salidas `console.log()` / stdout, errores, estado del proceso (Node.js o .NET 10), límite de memoria RAM y contador de reinicios. Permite limpiar, copiar al portapapeles o reiniciar la app con 1 clic.
+- **⚙️ Variables `.env` / `appsettings.json` (Editor Visual)**: Lee y muestra las variables del archivo `.env` (Node.js) o de `appsettings.json` con soporte para comentarios JSONC (.NET / ASP.NET Core). Puedes editar claves individuales o alternar al modo texto crudo; al guardar, el backend se reinicia en caliente con los nuevos valores.
+- **📊 Recursos por App y Pantalla de Monitor (`4. Recursos (CPU / RAM / Disco)`)**:
+  - **Telemetría en Tiempo Real (Host + MariaDB + Cada App)**: Consulta cada 2 segundos la RAM consumida vs. libre del teléfono Android, uso de almacenamiento interno, métricas de MariaDB (`mariadbd` RSS, CPU %, hilos y tamaño de datos) y el consumo real (`/proc/<pid>`) de cada aplicación (RAM RSS usada, pico, libre dentro de su cuota asignada, % de CPU, hilos activos, uptime y espacio en disco).
+  - **Gestor de Cuotas y Límites (`📊 Recursos` en cada App)**: Permite agregar o quitar recursos por aplicación mediante slider / botones rápidos (`-64 MB` / `+64 MB`), limitar núcleos de CPU (`.NET DOTNET_PROCESSOR_COUNT`), ajustar prioridad de CPU en Linux (`nice`), configurar hilos trabajadores (`UV_THREADPOOL_SIZE`), definir cuotas informativas de disco y **Pausar / Reanudar** temporalmente una aplicación para liberar RAM y CPU al instante.
 - **📦 Dependencias**: Inspecciona qué librerías de tu `package.json` están preinstaladas de fábrica, cuáles están en el almacén compartido y permite instalar paquetes adicionales de NPM bajo demanda.
-- **🗄️ Cambiar BD**: Cambia a qué base de datos MySQL/MariaDB apunta tu aplicación en caliente, sincronizando automáticamente el cambio con su archivo `.env`.
-- **🧠 Modo Experto (Avanzado)**: Un interruptor opcional al pie de tus aplicaciones que permite configurar el **límite de memoria RAM por defecto y por cada App (`--max-old-space-size`, desde 128 MB hasta 1024 MB)**, el **Auto-Reinicio Inteligente (Watchdog estilo PM2)** con retroceso exponencial y el tamaño del **Buffer Pool de MariaDB InnoDB**.
+- **🗄️ Cambiar BD**: Cambia a qué base de datos MySQL/MariaDB apunta tu aplicación en caliente, sincronizando automáticamente el cambio con su configuración de conexión.
+- **🧠 Modo Experto (Avanzado)**: Un interruptor opcional al pie de tus aplicaciones que permite configurar el **límite de memoria RAM por defecto y por cada App (`--max-old-space-size` / `DOTNET_GCHeapHardLimit`, desde 128 MB hasta 1024 MB; ampliable de 64 MB a 4096 MB desde el modal de 📊 Recursos)**, el **Auto-Reinicio Inteligente (Watchdog estilo PM2)** con retroceso exponencial y el tamaño del **Buffer Pool de MariaDB InnoDB**.
 
 ---
 

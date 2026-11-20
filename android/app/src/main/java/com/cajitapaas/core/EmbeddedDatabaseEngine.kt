@@ -145,6 +145,30 @@ class EmbeddedDatabaseEngine(private val context: Context) {
         return isLocalPortOpen(INTERNAL_MARIADB_PORT, timeoutMs = 400)
     }
 
+    fun getMariaDbProcessPid(): Int {
+        val proc = mariadbProcess ?: return -1
+        if (!proc.isAlive) return -1
+        runCatching {
+            val f = proc.javaClass.getDeclaredField("pid")
+            f.isAccessible = true
+            val p = f.getInt(proc)
+            if (p > 0) return p
+        }
+        val m = Regex("pid=(\\d+)").find(proc.toString())
+        return m?.groupValues?.getOrNull(1)?.toIntOrNull() ?: -1
+    }
+
+    fun getMariaDbDataSizeBytes(): Long {
+        var total = 0L
+        if (!dataDir.exists()) return 0L
+        runCatching {
+            dataDir.walkTopDown()
+                .filter { !java.nio.file.Files.isSymbolicLink(it.toPath()) && it.isFile }
+                .forEach { total += it.length() }
+        }
+        return total
+    }
+
     fun getLibSearchPath(): String {
         ensureBundleExtracted()
         ensureLibrarySymlinks()

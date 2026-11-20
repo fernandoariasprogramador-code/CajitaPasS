@@ -835,6 +835,9 @@
         <button class="tab-btn" data-tab="tab-tunnel" type="button">
           🌐 3. Red, Túnel y Supervivencia Wi-Fi
         </button>
+        <button class="tab-btn" data-tab="tab-resources" type="button">
+          📊 4. Recursos (CPU / RAM / Disco)
+        </button>
       </div>
 
       <!-- PESTAÑA 1: SUBIR APPS (.ZIP O GITHUB) -->
@@ -1330,6 +1333,76 @@
           >Esperando logs de cloudflared...</pre>
         </div>
       </section>
+
+      <!-- PESTAÑA 4: MONITOR Y GESTOR DE RECURSOS (CPU / RAM / DISCO EN VIVO) -->
+      <section id="tab-resources" class="tab-panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.15rem;">
+          <div>
+            <h3 class="card-title" style="margin-bottom: 0.15rem;">📊 Monitor de Recursos en Tiempo Real</h3>
+            <p class="card-desc" style="margin-bottom: 0;">Observá qué recursos consume cada app, cuánto queda libre en tu celular y agregá o quitá límites por servicio.</p>
+          </div>
+          <button id="btnRefreshResources" type="button" class="btn btn-secondary btn-small">
+            🔄 Actualizar Ahora
+          </button>
+        </div>
+
+        <!-- Tarjetas de Hardware del Teléfono y MariaDB -->
+        <div class="grid" style="margin-bottom: 1.25rem;">
+          <!-- Tarjeta Host RAM -->
+          <div class="card" style="border-color: rgba(0, 229, 163, 0.45);">
+            <h3 class="card-title">🧠 Memoria RAM del Celular</h3>
+            <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-top: 0.4rem;">
+              <span>Usada: <strong id="resHostRamUsed" style="color: var(--accent-mint);">- MB</strong></span>
+              <span>Libre: <strong id="resHostRamFree" style="color: #52a9ff;">- MB</strong></span>
+            </div>
+            <div style="height: 10px; background: var(--bg-input); border-radius: 999px; overflow: hidden; margin: 0.55rem 0; border: 1px solid var(--border);">
+              <div id="resHostRamBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, var(--primary-blue), var(--accent-mint)); transition: width 0.3s ease;"></div>
+            </div>
+            <div id="resHostRamMeta" style="font-size: 0.82rem; color: var(--text-muted); line-height: 1.5;">
+              Cargando telemetría de RAM...
+            </div>
+          </div>
+
+          <!-- Tarjeta CPU y Disco del Celular -->
+          <div class="card" style="border-color: rgba(24, 144, 255, 0.45);">
+            <h3 class="card-title">⚡ CPU y Almacenamiento</h3>
+            <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-top: 0.4rem;">
+              <span>Disco Usado: <strong id="resHostDiskUsed" style="color: var(--accent-mint);">- MB</strong></span>
+              <span>Libre: <strong id="resHostDiskFree" style="color: #52a9ff;">- MB</strong></span>
+            </div>
+            <div style="height: 10px; background: var(--bg-input); border-radius: 999px; overflow: hidden; margin: 0.55rem 0; border: 1px solid var(--border);">
+              <div id="resHostDiskBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #1890ff, #00e5a3); transition: width 0.3s ease;"></div>
+            </div>
+            <div id="resHostCpuMeta" style="font-size: 0.82rem; color: var(--text-muted); line-height: 1.5;">
+              Cargando núcleos y almacenamiento...
+            </div>
+          </div>
+
+          <!-- Tarjeta Motor MariaDB -->
+          <div class="card" style="border-color: rgba(255, 179, 0, 0.45);">
+            <h3 class="card-title">🗄️ Motor MariaDB InnoDB</h3>
+            <div id="resMariaDbMeta" style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.6; margin-top: 0.35rem;">
+              Cargando consumo del motor SQL...
+            </div>
+          </div>
+        </div>
+
+        <!-- Lista detallada por Aplicación -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <div>
+              <h3 class="card-title" style="margin-bottom: 0.1rem;">📦 Consumo y Límites por Aplicación</h3>
+              <p class="card-desc" style="margin-bottom: 0;">Tocá <strong>🎛️ Ajustar Recursos</strong> en cualquier app para aumentar o reducir su RAM máxima, núcleos CPU y prioridad.</p>
+            </div>
+          </div>
+
+          <div id="resourcesAppsContainer" class="app-list">
+            <div class="app-item">
+              <span style="color: var(--text-muted);">Cargando telemetría de aplicaciones...</span>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -1491,6 +1564,129 @@
         id="liveConsolePre"
         style="background: #05080c; color: #d6e8f5; border: 1px solid var(--border); border-radius: 12px; padding: 0.9rem; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.84rem; line-height: 1.45; height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;"
       >Cargando salida de consola...</pre>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 4: MONITOR Y EDITOR DE RECURSOS POR APLICACIÓN (RAM / CPU / DISCO)
+       ======================================================================== -->
+  <div id="modalAppResources" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-box" style="max-width: 680px; text-align: left; max-height: 92vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.55rem;">
+        <div>
+          <h2 class="modal-title" style="font-size: 1.32rem; margin-bottom: 0.15rem;">
+            📊 Recursos de <span id="resModalAppName" style="color: var(--accent-mint);">mi-app</span>
+          </h2>
+          <div id="resModalRuntimeSubtitle" style="font-size: 0.83rem; color: var(--text-muted);">
+            Cargando métricas en vivo...
+          </div>
+        </div>
+        <button id="btnCloseResModalTop" type="button" class="btn btn-secondary btn-small">✕ Cerrar</button>
+      </div>
+
+      <!-- Tarjeta de consumo en vivo vs cuota libre -->
+      <div style="background: var(--bg-input); border: 1px solid var(--border); border-radius: 14px; padding: 0.95rem 1rem; margin-bottom: 1rem;">
+        <div class="grid" style="margin-bottom: 0.5rem; gap: 0.75rem;">
+          <div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase;">RAM Consumida / Límite</div>
+            <div style="font-size: 1.15rem; font-weight: 800; color: var(--accent-mint); margin-top: 0.15rem;">
+              <span id="resModalRamUsed">- MB</span> <span style="font-size: 0.85rem; color: var(--text-muted);">/ <span id="resModalRamLimit">- MB</span></span>
+            </div>
+            <div style="font-size: 0.8rem; color: #52a9ff;">Libre en cuota: <strong id="resModalRamFree">- MB</strong></div>
+          </div>
+          <div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase;">CPU · Hilos · Disco App</div>
+            <div style="font-size: 1.08rem; font-weight: 800; color: var(--text-main); margin-top: 0.15rem;">
+              CPU: <span id="resModalCpuPct" style="color: var(--amber);">0%</span> · Hilos: <span id="resModalThreads">0</span>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">
+              Disco: <strong id="resModalDiskUsed">- MB</strong> · Libre en celu: <strong id="resModalHostFreeRam">- MB RAM</strong>
+            </div>
+          </div>
+        </div>
+        <div style="height: 8px; background: #131c27; border-radius: 999px; overflow: hidden; border: 1px solid var(--border);">
+          <div id="resModalRamBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, var(--primary-blue), var(--accent-mint)); transition: width 0.3s ease;"></div>
+        </div>
+      </div>
+
+      <!-- Controles para agregar o quitar recursos -->
+      <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+            <label for="resModalRamRange" style="margin: 0;">🧠 Memoria RAM Máxima Asignada (MB)</label>
+            <div style="display: flex; gap: 0.35rem; align-items: center;">
+              <button type="button" id="btnResRamMinus" class="btn btn-secondary btn-small" style="min-height: 32px; padding: 0.2rem 0.55rem;">-64 MB</button>
+              <strong id="resModalRamSliderVal" style="color: var(--accent-mint); font-family: monospace; min-width: 68px; text-align: center;">256 MB</strong>
+              <button type="button" id="btnResRamPlus" class="btn btn-secondary btn-small" style="min-height: 32px; padding: 0.2rem 0.55rem;">+64 MB</button>
+            </div>
+          </div>
+          <input type="range" id="resModalRamRange" min="64" max="1536" step="64" value="256" style="min-height: 28px; padding: 0; margin-top: 0.45rem; cursor: pointer;" />
+          <small style="color: var(--text-muted); font-size: 0.78rem;">
+            Se aplica al heap máximo en Node.js (<code>--max-old-space-size</code>) y en .NET 10 (<code>DOTNET_GCHeapHardLimit</code>).
+          </small>
+        </div>
+
+        <div class="grid" style="margin-bottom: 0; gap: 0.75rem;">
+          <div>
+            <label for="resModalCpuCoresSelect" style="margin-top: 0;">⚡ Núcleos CPU Permitidos (.NET / Threads)</label>
+            <select id="resModalCpuCoresSelect">
+              <option value="0">Todos los núcleos del celular (Auto)</option>
+              <option value="1">1 núcleo (Ahorro máximo)</option>
+              <option value="2">2 núcleos</option>
+              <option value="4">4 núcleos</option>
+            </select>
+          </div>
+          <div>
+            <label for="resModalNiceSelect" style="margin-top: 0;">🔋 Prioridad de CPU (Linux <code>nice</code>)</label>
+            <select id="resModalNiceSelect">
+              <option value="0">Normal (Máximo rendimiento · nice 0)</option>
+              <option value="5">Moderada (Cede prioridad · nice 5)</option>
+              <option value="10">Baja (Segundo plano / Ahorro · nice 10)</option>
+              <option value="15">Mínima (Uso mínimo CPU · nice 15)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom: 0; gap: 0.75rem;">
+          <div>
+            <label for="resModalWorkersSelect" style="margin-top: 0;">🧵 Hilos Worker I/O (Node <code>UV_THREADPOOL_SIZE</code>)</label>
+            <select id="resModalWorkersSelect">
+              <option value="2">2 hilos (Ligero)</option>
+              <option value="4" selected>4 hilos (Estándar)</option>
+              <option value="8">8 hilos (Alta concurrencia)</option>
+              <option value="16">16 hilos (Máximo I/O)</option>
+            </select>
+          </div>
+          <div>
+            <label for="resModalDiskLimitSelect" style="margin-top: 0;">💾 Cuota Máxima de Disco de Referencia</label>
+            <select id="resModalDiskLimitSelect">
+              <option value="0" selected>Sin tope fijo (Libre según el celular)</option>
+              <option value="100">100 MB</option>
+              <option value="250">250 MB</option>
+              <option value="500">500 MB</option>
+              <option value="1024">1024 MB (1 GB)</option>
+              <option value="2048">2048 MB (2 GB)</option>
+            </select>
+          </div>
+        </div>
+
+        <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
+          <input type="checkbox" id="resModalRestartCheck" checked style="width: auto; min-height: auto; transform: scale(1.2);" />
+          Reiniciar el servicio ahora para aplicar los nuevos límites de RAM/CPU al proceso
+        </label>
+      </div>
+
+      <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; justify-content: flex-end; flex-wrap: wrap;">
+        <button id="btnResModalTogglePause" type="button" class="btn btn-secondary btn-small" style="margin-right: auto;">
+          ⏸️ Pausar Proceso
+        </button>
+        <button id="btnCancelResModal" type="button" class="btn btn-secondary btn-small">
+          Cerrar
+        </button>
+        <button id="btnSaveResModal" type="button" class="btn btn-small" style="min-height: 46px; padding: 0.6rem 1.25rem;">
+          💾 Guardar y Aplicar Recursos
+        </button>
+      </div>
     </div>
   </div>
 

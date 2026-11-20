@@ -347,15 +347,21 @@ function syncAllData() {
   fetchTunnelStatus();
   fetchFailoverStatus();
   fetchExpertConfig();
+  fetchResourcesSnapshot();
+  updateResourcesPollTimer();
 }
 
-// Cambio de pestañas (Mis Apps vs Mis Bases de Datos)
+// Cambio de pestañas (Mis Apps vs Mis Bases de Datos vs Red vs Recursos)
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'tab-resources') {
+      fetchResourcesSnapshot();
+    }
+    updateResourcesPollTimer();
   });
 });
 
@@ -937,6 +943,14 @@ async function loadProjects() {
           ` : ''}
           <button
             type="button"
+            class="btn btn-secondary btn-small btn-open-resources"
+            data-app="${baseAppName}"
+            title="Ver CPU, RAM y Disco consumido/libre y modificar límites"
+          >
+            📊 Recursos
+          </button>
+          <button
+            type="button"
             class="btn btn-secondary btn-small btn-select-app"
             data-app="${baseAppName}"
             data-role="${role}"
@@ -992,6 +1006,10 @@ async function loadProjects() {
 
     appsListContainer.querySelectorAll('.btn-open-deps').forEach((btn) => {
       btn.addEventListener('click', () => openDependenciesModal(btn.dataset.app, false));
+    });
+
+    appsListContainer.querySelectorAll('.btn-open-resources').forEach((btn) => {
+      btn.addEventListener('click', () => openAppResourcesModal(btn.dataset.app));
     });
 
     appsListContainer.querySelectorAll('.btn-change-db').forEach((btn) => {
@@ -1666,6 +1684,570 @@ if (btnSaveExpertConfig) {
     }
   });
 }
+
+// ============================================================================
+// 6.5 MONITOR Y GESTOR DE RECURSOS (CPU / RAM / DISCO POR APP Y DEL TELÉFONO)
+// ============================================================================
+
+const tabResourcesPanel = document.getElementById('tab-resources');
+const btnRefreshResources = document.getElementById('btnRefreshResources');
+const resHostRamUsed = document.getElementById('resHostRamUsed');
+const resHostRamFree = document.getElementById('resHostRamFree');
+const resHostRamBar = document.getElementById('resHostRamBar');
+const resHostRamMeta = document.getElementById('resHostRamMeta');
+const resHostDiskUsed = document.getElementById('resHostDiskUsed');
+const resHostDiskFree = document.getElementById('resHostDiskFree');
+const resHostDiskBar = document.getElementById('resHostDiskBar');
+const resHostCpuMeta = document.getElementById('resHostCpuMeta');
+const resMariaDbMeta = document.getElementById('resMariaDbMeta');
+const resourcesAppsContainer = document.getElementById('resourcesAppsContainer');
+
+const modalAppResources = document.getElementById('modalAppResources');
+const resModalAppName = document.getElementById('resModalAppName');
+const resModalRuntimeSubtitle = document.getElementById('resModalRuntimeSubtitle');
+const btnCloseResModalTop = document.getElementById('btnCloseResModalTop');
+const resModalRamUsed = document.getElementById('resModalRamUsed');
+const resModalRamLimit = document.getElementById('resModalRamLimit');
+const resModalRamFree = document.getElementById('resModalRamFree');
+const resModalCpuPct = document.getElementById('resModalCpuPct');
+const resModalThreads = document.getElementById('resModalThreads');
+const resModalDiskUsed = document.getElementById('resModalDiskUsed');
+const resModalHostFreeRam = document.getElementById('resModalHostFreeRam');
+const resModalRamBar = document.getElementById('resModalRamBar');
+const resModalRamSliderVal = document.getElementById('resModalRamSliderVal');
+const btnResRamMinus = document.getElementById('btnResRamMinus');
+const btnResRamPlus = document.getElementById('btnResRamPlus');
+const resModalRamRange = document.getElementById('resModalRamRange');
+const resModalCpuCoresSelect = document.getElementById('resModalCpuCoresSelect');
+const resModalNiceSelect = document.getElementById('resModalNiceSelect');
+const resModalWorkersSelect = document.getElementById('resModalWorkersSelect');
+const resModalDiskLimitSelect = document.getElementById('resModalDiskLimitSelect');
+const resModalRestartCheck = document.getElementById('resModalRestartCheck');
+const btnResModalTogglePause = document.getElementById('btnResModalTogglePause');
+const btnCancelResModal = document.getElementById('btnCancelResModal');
+const btnSaveResModal = document.getElementById('btnSaveResModal');
+
+let lastResourcesSnapshot = null;
+let activeResourcesModalApp = '';
+let resModalNeedsFormInit = false;
+let resourcesPollTimer = null;
+let isFetchingResources = false;
+
+function escapeResHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatResStorageMb(mb) {
+  const n = Number(mb || 0);
+  if (!Number.isFinite(n) || n <= 0) return '0 MB';
+  if (n >= 1024) return `${(n / 1024).toFixed(2)} GB`;
+  return `${Math.round(n)} MB`;
+}
+
+function formatResUptime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)));
+  if (total <= 0) return '0s';
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function getResBarColor(pct, forceDanger) {
+  if (forceDanger || pct >= 85) return 'var(--danger, #ff4d6d)';
+  if (pct >= 70) return 'var(--amber, #ffb300)';
+  return 'var(--accent-mint, #00e5a3)';
+}
+
+function setSelectValueSafe(selectEl, value, unitLabel) {
+  if (!selectEl) return;
+  const target = String(value);
+  let found = false;
+  for (let i = 0; i < selectEl.options.length; i++) {
+    if (selectEl.options[i].value === target) {
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    const opt = document.createElement('option');
+    opt.value = target;
+    opt.textContent = `${target}${unitLabel || ''}`;
+    selectEl.appendChild(opt);
+  }
+  selectEl.value = target;
+}
+
+function syncCpuCoresOptions(hostCores) {
+  if (!resModalCpuCoresSelect) return;
+  const totalCores = Math.max(1, Number(hostCores || 8));
+  const existingValues = new Set(Array.from(resModalCpuCoresSelect.options).map((o) => o.value));
+  for (let c = 1; c <= totalCores; c++) {
+    if (!existingValues.has(String(c))) {
+      const opt = document.createElement('option');
+      opt.value = String(c);
+      opt.textContent = `${c} ${c === 1 ? 'núcleo' : 'núcleos'}`;
+      resModalCpuCoresSelect.appendChild(opt);
+    }
+  }
+}
+
+function updateResourcesPollTimer() {
+  const tabOpen = Boolean(tabResourcesPanel && tabResourcesPanel.classList.contains('active'));
+  const modalOpen = Boolean(modalAppResources && !modalAppResources.classList.contains('hidden'));
+  const shouldPoll = Boolean(getToken()) && (tabOpen || modalOpen);
+
+  if (shouldPoll && !resourcesPollTimer) {
+    resourcesPollTimer = setInterval(() => {
+      if (!getToken()) {
+        updateResourcesPollTimer();
+        return;
+      }
+      fetchResourcesSnapshot();
+    }, 2000);
+  } else if (!shouldPoll && resourcesPollTimer) {
+    clearInterval(resourcesPollTimer);
+    resourcesPollTimer = null;
+  }
+}
+
+function renderResourcesTab(snapshot) {
+  if (!snapshot) return;
+  const host = snapshot.host || {};
+  const mariadb = snapshot.mariadb || {};
+  const apps = Array.isArray(snapshot.apps) ? snapshot.apps : [];
+
+  const hostRamPct = Math.min(100, Math.max(0, Number(host.ramUsagePct || 0)));
+  if (resHostRamUsed) resHostRamUsed.textContent = `${host.usedRamMb ?? 0} MB`;
+  if (resHostRamFree) resHostRamFree.textContent = `${host.freeRamMb ?? 0} MB libres`;
+  if (resHostRamBar) {
+    resHostRamBar.style.width = `${hostRamPct}%`;
+    resHostRamBar.style.background = getResBarColor(hostRamPct, Boolean(host.lowMemory));
+  }
+  if (resHostRamMeta) {
+    resHostRamMeta.textContent =
+      `Total: ${host.totalRamMb ?? 0} MB · Apps en uso: ${host.appsRamUsedMb ?? 0} MB · ` +
+      `Cuotas asignadas: ${host.allocatedRamMb ?? 0} MB · Disponible p/ asignar: ${host.availableToAllocateMb ?? 0} MB · ` +
+      `Panel CPS: ${host.controlPlaneRamMb ?? 0} MB${host.lowMemory ? ' · ⚠️ Memoria Baja' : ''}`;
+  }
+
+  const hostDiskPct = Math.min(100, Math.max(0, Number(host.diskUsagePct || 0)));
+  if (resHostDiskUsed) resHostDiskUsed.textContent = formatResStorageMb(host.usedDiskMb ?? 0);
+  if (resHostDiskFree) resHostDiskFree.textContent = `${formatResStorageMb(host.freeDiskMb ?? 0)} libres`;
+  if (resHostDiskBar) {
+    resHostDiskBar.style.width = `${hostDiskPct}%`;
+    resHostDiskBar.style.background = getResBarColor(hostDiskPct, hostDiskPct >= 90);
+  }
+  if (resHostCpuMeta) {
+    resHostCpuMeta.textContent =
+      `Núcleos CPU: ${host.cpuCores ?? 0} · Disco Total: ${formatResStorageMb(host.totalDiskMb ?? 0)} · ` +
+      `Apps: ${formatResStorageMb(host.appsDiskUsedMb ?? 0)} · Shared Store: ${formatResStorageMb(host.sharedStoreDiskMb ?? 0)} · ` +
+      `Hilos CPS: ${host.controlPlaneThreads ?? 0}`;
+  }
+
+  if (resMariaDbMeta) {
+    const dbState = mariadb.healthy
+      ? '<span style="color:var(--accent-mint);font-weight:800;">🟢 Activo</span>'
+      : '<span style="color:var(--danger,#ff4d6d);font-weight:800;">🔴 Detenido</span>';
+    resMariaDbMeta.innerHTML =
+      `${dbState} · PID: <strong>${mariadb.pid > 0 ? mariadb.pid : '—'}</strong> · ` +
+      `RAM RSS: <strong style="color:var(--accent-mint);">${mariadb.ramUsedMb ?? 0} MB</strong> (Pico: ${mariadb.ramPeakMb ?? 0} MB · InnoDB Buffer: ${mariadb.innoDbBufferMb ?? 32} MB) · ` +
+      `CPU: <strong>${Number(mariadb.cpuPercent ?? 0).toFixed(1)}%</strong> · ` +
+      `Hilos: <strong>${mariadb.threads ?? 0}</strong> · ` +
+      `Disco BD: <strong>${formatResStorageMb(mariadb.diskUsedMb ?? 0)}</strong> · ` +
+      `Conexiones activas: <strong>${mariadb.activeConnections ?? 0}</strong>`;
+  }
+
+  if (!resourcesAppsContainer) return;
+  if (apps.length === 0) {
+    resourcesAppsContainer.innerHTML = `
+      <div class="app-item">
+        <span style="color: var(--text-muted);">No hay aplicaciones desplegadas todavía. Subí una app en la pestaña "1. Mis Apps".</span>
+      </div>
+    `;
+    return;
+  }
+
+  resourcesAppsContainer.innerHTML = apps
+    .map((app) => {
+      const appNameEsc = escapeResHtml(app.appName);
+      const isStatic = app.runtime === 'static';
+      const ramPct = Math.min(100, Math.max(0, Number(app.ramQuotaPct || 0)));
+      const ramBarColor = getResBarColor(ramPct, false);
+
+      const statusBadge = app.paused
+        ? '<span style="background:rgba(255,179,0,0.18);color:#ffd54f;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.74rem;font-weight:800;">⏸️ PAUSADA</span>'
+        : app.alive
+        ? `<span style="background:rgba(0,229,163,0.18);color:#00e5a3;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.74rem;font-weight:800;">🟢 ACTIVA · PID ${app.pid}</span>`
+        : isStatic
+        ? '<span style="background:rgba(24,144,255,0.2);color:#52a9ff;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.74rem;font-weight:800;">🌐 ESTÁTICA (PROXY CPS)</span>'
+        : `<span style="background:rgba(255,77,109,0.2);color:#ff7b93;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.74rem;font-weight:800;">🟠 ${escapeResHtml(app.watchdogState || 'DETENIDA')}</span>`;
+
+      const runtimeLabel =
+        app.runtime === 'dotnet'
+          ? '.NET 10'
+          : app.runtime === 'node'
+          ? 'Node.js'
+          : 'Estático';
+
+      const niceLabel =
+        Number(app.cpuPriorityNice || 0) === 0
+          ? 'Normal (0)'
+          : Number(app.cpuPriorityNice) > 0
+          ? `Ahorro (+${app.cpuPriorityNice})`
+          : `Alta (${app.cpuPriorityNice})`;
+
+      const diskQuotaText =
+        Number(app.diskLimitMb || 0) > 0
+          ? `${formatResStorageMb(app.diskFreeInQuotaMb)} libres (de ${formatResStorageMb(app.diskLimitMb)})`
+          : 'Sin límite de cuota';
+
+      return `
+        <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:12px;padding:0.95rem 1.05rem;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+            <div>
+              <div style="display:flex;align-items:center;flex-wrap:wrap;gap:0.45rem;">
+                <strong style="font-size:1.05rem;color:#fff;font-family:monospace;">${appNameEsc}</strong>
+                ${statusBadge}
+                <span style="background:rgba(255,255,255,0.08);color:var(--text-muted);padding:0.15rem 0.45rem;border-radius:6px;font-size:0.74rem;font-weight:700;">${escapeResHtml(runtimeLabel)} · ${escapeResHtml((app.role || 'app').toUpperCase())}</span>
+              </div>
+              <div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.25rem;">
+                Puerto :<strong>${app.port || '—'}</strong> ·
+                Uptime: <strong>${formatResUptime(app.uptimeSeconds)}</strong>
+                ${Number(app.restartCount || 0) > 0 ? ` · Reinicios Watchdog: <strong style="color:var(--amber);">${app.restartCount}</strong>` : ''}
+              </div>
+            </div>
+            <div style="display:flex;gap:0.45rem;flex-wrap:wrap;">
+              <button
+                type="button"
+                class="btn btn-small btn-res-adjust"
+                data-app="${appNameEsc}"
+              >
+                🎛️ Ajustar Recursos
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary btn-small btn-res-toggle"
+                data-app="${appNameEsc}"
+                data-want-active="${app.paused ? 'true' : 'false'}"
+                style="${app.paused ? 'border-color:var(--accent-mint);color:var(--accent-mint);' : 'border-color:var(--amber);color:#ffd54f;'}"
+              >
+                ${app.paused ? '▶️ Reanudar' : '⏸️ Pausar'}
+              </button>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0.7rem;">
+            <div style="background:rgba(0,0,0,0.22);border:1px solid var(--border);border-radius:9px;padding:0.6rem 0.75rem;">
+              <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">
+                <span>🧠 Memoria RAM</span>
+                <strong style="color:#fff;">${ramPct.toFixed(0)}% de cuota</strong>
+              </div>
+              <div style="font-size:0.9rem;color:#fff;font-weight:700;">
+                ${app.ramUsedMb ?? 0} MB usados · <span style="color:var(--accent-mint);">${app.ramFreeInQuotaMb ?? 0} MB libres</span>
+              </div>
+              <div style="height:7px;background:rgba(255,255,255,0.09);border-radius:99px;overflow:hidden;margin:0.4rem 0 0.25rem;">
+                <div style="height:100%;width:${ramPct}%;background:${ramBarColor};transition:width 0.3s ease;"></div>
+              </div>
+              <div style="font-size:0.74rem;color:var(--text-muted);">
+                Límite asignado: <strong>${app.ramLimitMb ?? 256} MB</strong> · Pico: <strong>${app.ramPeakMb ?? 0} MB</strong>
+              </div>
+            </div>
+
+            <div style="background:rgba(0,0,0,0.22);border:1px solid var(--border);border-radius:9px;padding:0.6rem 0.75rem;">
+              <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">⚙️ CPU e Hilos</div>
+              <div style="font-size:0.9rem;color:#fff;font-weight:700;">
+                ${Number(app.cpuPercent ?? 0).toFixed(1)}% CPU · ${app.threads ?? 0} hilos
+              </div>
+              <div style="font-size:0.74rem;color:var(--text-muted);margin-top:0.35rem;line-height:1.45;">
+                Núcleos máx: <strong>${Number(app.cpuCoresLimit || 0) > 0 ? app.cpuCoresLimit : 'Auto (todos)'}</strong> ·
+                Prioridad: <strong>${niceLabel}</strong> ·
+                Workers: <strong>${app.workerThreads ?? 4}</strong>
+              </div>
+            </div>
+
+            <div style="background:rgba(0,0,0,0.22);border:1px solid var(--border);border-radius:9px;padding:0.6rem 0.75rem;">
+              <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">💾 Almacenamiento</div>
+              <div style="font-size:0.9rem;color:#fff;font-weight:700;">
+                ${formatResStorageMb(app.diskUsedMb ?? 0)} ocupados
+              </div>
+              <div style="font-size:0.74rem;color:var(--text-muted);margin-top:0.35rem;line-height:1.45;">
+                ${diskQuotaText}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  resourcesAppsContainer.querySelectorAll('.btn-res-adjust').forEach((btn) => {
+    btn.addEventListener('click', () => openAppResourcesModal(btn.dataset.app));
+  });
+
+  resourcesAppsContainer.querySelectorAll('.btn-res-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      toggleAppPauseState(btn.dataset.app, btn.dataset.wantActive === 'true', btn);
+    });
+  });
+}
+
+function renderModalAppResources(snapshot) {
+  if (!modalAppResources || modalAppResources.classList.contains('hidden') || !activeResourcesModalApp) return;
+  const host = (snapshot && snapshot.host) || {};
+  const apps = snapshot && Array.isArray(snapshot.apps) ? snapshot.apps : [];
+  const app = apps.find((a) => a.appName === activeResourcesModalApp);
+  if (!app) return;
+
+  if (resModalAppName) resModalAppName.textContent = app.appName;
+  if (resModalRuntimeSubtitle) {
+    const statusTxt = app.paused
+      ? '⏸️ Pausada'
+      : app.alive
+      ? `🟢 PID ${app.pid} · Uptime ${formatResUptime(app.uptimeSeconds)}`
+      : app.runtime === 'static'
+      ? '🌐 Sitio Estático (Proxy CPS)'
+      : `🟠 ${app.watchdogState || 'Detenida'}`;
+    resModalRuntimeSubtitle.textContent =
+      `Runtime: ${app.runtime || '—'} · Rol: ${app.role || '—'} · Puerto :${app.port || '—'} · ${statusTxt}`;
+  }
+
+  const ramPct = Math.min(100, Math.max(0, Number(app.ramQuotaPct || 0)));
+  if (resModalRamUsed) resModalRamUsed.textContent = `${app.ramUsedMb ?? 0} MB`;
+  if (resModalRamLimit) resModalRamLimit.textContent = `${app.ramLimitMb ?? 256} MB`;
+  if (resModalRamFree) resModalRamFree.textContent = `${app.ramFreeInQuotaMb ?? 0} MB`;
+  if (resModalCpuPct) resModalCpuPct.textContent = `${Number(app.cpuPercent ?? 0).toFixed(1)}%`;
+  if (resModalThreads) resModalThreads.textContent = `${app.threads ?? 0}`;
+  if (resModalDiskUsed) resModalDiskUsed.textContent = formatResStorageMb(app.diskUsedMb ?? 0);
+  if (resModalHostFreeRam) resModalHostFreeRam.textContent = `${host.freeRamMb ?? 0} MB`;
+  if (resModalRamBar) {
+    resModalRamBar.style.width = `${ramPct}%`;
+    resModalRamBar.style.background = getResBarColor(ramPct, false);
+  }
+
+  if (btnResModalTogglePause) {
+    btnResModalTogglePause.textContent = app.paused
+      ? '▶️ Reanudar App'
+      : '⏸️ Pausar App (Liberar RAM/CPU)';
+    btnResModalTogglePause.dataset.wantActive = app.paused ? 'true' : 'false';
+  }
+
+  if (resModalNeedsFormInit) {
+    resModalNeedsFormInit = false;
+    syncCpuCoresOptions(host.cpuCores || 8);
+
+    if (resModalRamRange) {
+      const hostMax = Math.max(
+        1024,
+        Math.min(4096, Math.floor(((Number(host.totalRamMb || 2048) * 0.75) / 32)) * 32)
+      );
+      resModalRamRange.min = '64';
+      resModalRamRange.max = String(Math.max(hostMax, Number(app.ramLimitMb || 256)));
+      resModalRamRange.step = '32';
+      const initialRam = Math.max(64, Number(app.ramLimitMb || 256));
+      resModalRamRange.value = String(initialRam);
+      if (resModalRamSliderVal) resModalRamSliderVal.textContent = `${initialRam} MB`;
+    }
+
+    setSelectValueSafe(resModalCpuCoresSelect, app.cpuCoresLimit ?? 0, ' núcleos');
+    setSelectValueSafe(resModalNiceSelect, app.cpuPriorityNice ?? 0, '');
+    setSelectValueSafe(resModalWorkersSelect, app.workerThreads ?? 4, ' hilos');
+    setSelectValueSafe(resModalDiskLimitSelect, app.diskLimitMb ?? 0, ' MB');
+    if (resModalRestartCheck) resModalRestartCheck.checked = true;
+  }
+}
+
+async function fetchResourcesSnapshot(preserveError) {
+  if (!getToken() || isFetchingResources) return;
+  isFetchingResources = true;
+  try {
+    const res = await fetch('./api/v1/resources', { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    lastResourcesSnapshot = data;
+    renderResourcesTab(data);
+    renderModalAppResources(data);
+  } catch (_err) {
+    if (!preserveError) {
+      // Silencioso en sondeo en segundo plano
+    }
+  } finally {
+    isFetchingResources = false;
+  }
+}
+
+async function openAppResourcesModal(appName) {
+  if (!modalAppResources || !appName) return;
+  activeResourcesModalApp = appName;
+  resModalNeedsFormInit = true;
+  modalAppResources.classList.remove('hidden');
+  updateResourcesPollTimer();
+
+  if (lastResourcesSnapshot) {
+    renderModalAppResources(lastResourcesSnapshot);
+  }
+  await fetchResourcesSnapshot(true);
+}
+
+function closeAppResourcesModal() {
+  if (modalAppResources) modalAppResources.classList.add('hidden');
+  activeResourcesModalApp = '';
+  resModalNeedsFormInit = false;
+  updateResourcesPollTimer();
+}
+
+async function toggleAppPauseState(appName, wantActive, triggerBtn) {
+  if (!appName) return;
+  const origText = triggerBtn ? triggerBtn.textContent : '';
+  let toggledOk = false;
+  if (triggerBtn) {
+    triggerBtn.disabled = true;
+    triggerBtn.textContent = wantActive ? '⏳ Reanudando...' : '⏳ Pausando...';
+  }
+  try {
+    const res = await fetch(`./api/v1/projects/${encodeURIComponent(appName)}/resources/toggle`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: Boolean(wantActive) })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      toggledOk = true;
+      if (data.resources) {
+        lastResourcesSnapshot = data.resources;
+        renderResourcesTab(data.resources);
+        renderModalAppResources(data.resources);
+      } else {
+        await fetchResourcesSnapshot(false);
+      }
+      loadProjects();
+    } else {
+      alert(data.error || 'No se pudo cambiar el estado de ejecución de la app');
+    }
+  } catch (_err) {
+    alert('Error de conexión al pausar o reanudar la aplicación');
+  } finally {
+    if (triggerBtn) {
+      triggerBtn.disabled = false;
+      if (!toggledOk && origText) triggerBtn.textContent = origText;
+    }
+  }
+}
+
+if (btnRefreshResources) {
+  btnRefreshResources.addEventListener('click', async () => {
+    btnRefreshResources.disabled = true;
+    const prevText = btnRefreshResources.textContent;
+    btnRefreshResources.textContent = '⏳ Actualizando...';
+    try {
+      await fetchResourcesSnapshot(false);
+    } finally {
+      btnRefreshResources.disabled = false;
+      btnRefreshResources.textContent = prevText;
+    }
+  });
+}
+
+if (resModalRamRange) {
+  resModalRamRange.addEventListener('input', () => {
+    if (resModalRamSliderVal) resModalRamSliderVal.textContent = `${resModalRamRange.value} MB`;
+  });
+}
+
+if (btnResRamMinus && resModalRamRange) {
+  btnResRamMinus.addEventListener('click', () => {
+    const min = Number(resModalRamRange.min || 64);
+    const cur = Number(resModalRamRange.value || 256);
+    const next = Math.max(min, cur - 64);
+    resModalRamRange.value = String(next);
+    if (resModalRamSliderVal) resModalRamSliderVal.textContent = `${next} MB`;
+  });
+}
+
+if (btnResRamPlus && resModalRamRange) {
+  btnResRamPlus.addEventListener('click', () => {
+    const max = Number(resModalRamRange.max || 2048);
+    const cur = Number(resModalRamRange.value || 256);
+    const next = Math.min(max, cur + 64);
+    resModalRamRange.value = String(next);
+    if (resModalRamSliderVal) resModalRamSliderVal.textContent = `${next} MB`;
+  });
+}
+
+if (btnResModalTogglePause) {
+  btnResModalTogglePause.addEventListener('click', () => {
+    if (!activeResourcesModalApp) return;
+    const wantActive = btnResModalTogglePause.dataset.wantActive === 'true';
+    toggleAppPauseState(activeResourcesModalApp, wantActive, btnResModalTogglePause);
+  });
+}
+
+if (btnSaveResModal) {
+  btnSaveResModal.addEventListener('click', async () => {
+    if (!activeResourcesModalApp) return;
+    btnSaveResModal.disabled = true;
+    const prevText = btnSaveResModal.textContent;
+    btnSaveResModal.textContent = '⏳ Aplicando recursos...';
+    try {
+      const payload = {
+        maxRamMb: Number(resModalRamRange ? resModalRamRange.value : 256),
+        cpuCoresLimit: Number(resModalCpuCoresSelect ? resModalCpuCoresSelect.value : 0),
+        cpuPriorityNice: Number(resModalNiceSelect ? resModalNiceSelect.value : 0),
+        workerThreads: Number(resModalWorkersSelect ? resModalWorkersSelect.value : 4),
+        maxDiskMb: Number(resModalDiskLimitSelect ? resModalDiskLimitSelect.value : 0),
+        restartToApply: resModalRestartCheck ? Boolean(resModalRestartCheck.checked) : true
+      };
+
+      const res = await fetch(`./api/v1/projects/${encodeURIComponent(activeResourcesModalApp)}/resources`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (data.resources) {
+          lastResourcesSnapshot = data.resources;
+          renderResourcesTab(data.resources);
+        } else {
+          await fetchResourcesSnapshot(false);
+        }
+        loadProjects();
+        fetchExpertConfig();
+        const savedName = activeResourcesModalApp;
+        closeAppResourcesModal();
+        showResultModal({
+          type: 'success',
+          title: '¡Recursos Actualizados!',
+          desc:
+            data.message ||
+            `La aplicación "${savedName}" quedó configurada con ${payload.maxRamMb} MB de RAM máxima.`,
+          pill: payload.restartToApply
+            ? '🔄 Proceso reiniciado con los nuevos límites'
+            : '💾 Límites guardados (se aplicarán en el próximo inicio)'
+        });
+      } else {
+        alert(data.error || 'No se pudieron guardar los recursos de la app');
+      }
+    } catch (_err) {
+      alert('Error de conexión guardando recursos de la aplicación');
+    } finally {
+      btnSaveResModal.disabled = false;
+      btnSaveResModal.textContent = prevText;
+    }
+  });
+}
+
+if (btnCloseResModalTop) btnCloseResModalTop.addEventListener('click', closeAppResourcesModal);
+if (btnCancelResModal) btnCancelResModal.addEventListener('click', closeAppResourcesModal);
 
 // ============================================================================
 // 7. MODO PC (PUENTE DBEAVER), BASES DE DATOS Y EXPORTAR/IMPORTAR .SQL
