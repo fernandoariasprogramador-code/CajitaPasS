@@ -1315,9 +1315,14 @@
               <h3 class="card-title" style="margin-bottom: 0.15rem;">🩺 Diagnóstico y Logs de Cloudflared</h3>
               <p class="card-desc" style="margin-bottom: 0;">Mostrando la conexión real en vivo con los servidores de Cloudflare.</p>
             </div>
-            <button id="btnRefreshTunnelStatus" type="button" class="btn btn-secondary btn-small">
-              🔄 Actualizar Estado / Logs
-            </button>
+            <div style="display: flex; gap: 0.45rem; flex-wrap: wrap;">
+              <button id="btnCopyTunnelLogs" type="button" class="btn btn-secondary btn-small">
+                📋 Copiar Logs
+              </button>
+              <button id="btnRefreshTunnelStatus" type="button" class="btn btn-secondary btn-small">
+                🔄 Actualizar Estado / Logs
+              </button>
+            </div>
           </div>
           <pre
             id="tunnelLogsPre"

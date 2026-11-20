@@ -2803,11 +2803,13 @@ class EmbeddedControlPlaneServer(
     }
 
     // ========================================================================
-    // GESTIÓN DE ARCHIVOS .ENV EN CALIENTE POR APLICACIÓN
+    // GESTIÓN DE ARCHIVOS .ENV Y APPSETTINGS.JSON (.NET) EN CALIENTE POR APP
     // ========================================================================
 
     private fun findExistingEnvFile(appRoot: File): File? {
-        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: appRoot
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile
+            ?: findDotnetEntryAssembly(appRoot)?.second
+            ?: appRoot
         val candidates = listOf(
             File(appRoot, ".env"),
             File(entryDir, ".env"),
@@ -2816,6 +2818,158 @@ class EmbeddedControlPlaneServer(
             File(appRoot, ".env.example")
         )
         return candidates.firstOrNull { it.exists() && it.isFile }
+    }
+
+    private fun findAppSettingsFile(appRoot: File): File? {
+        val dotnetContentRoot = findDotnetEntryAssembly(appRoot)?.second
+        val candidates = listOfNotNull(
+            dotnetContentRoot?.let { File(it, "appsettings.json") },
+            File(appRoot, "appsettings.json"),
+            dotnetContentRoot?.let { File(it, "appsettings.Production.json") },
+            File(appRoot, "appsettings.Production.json")
+        )
+        return candidates.firstOrNull { it.exists() && it.isFile }
+    }
+
+    /**
+     * Elimina comentarios `//` y `/* ... */` y comas finales sobrantes fuera de comillas (formato JSONC usado por Visual Studio en `appsettings.json`),
+     * preservando intactas las URLs como `"https://..."` dentro de cadenas.
+     */
+    private fun stripJsonCommentsAndTrailingCommas(raw: String): String {
+        val noComments = StringBuilder(raw.length)
+        var i = 0
+        var inString = false
+        var escaped = false
+        while (i < raw.length) {
+            val c = raw[i]
+            val next = if (i + 1 < raw.length) raw[i + 1] else '\u0000'
+            if (inString) {
+                noComments.append(c)
+                if (escaped) {
+                    escaped = false
+                } else if (c == '\\') {
+                    escaped = true
+                } else if (c == '"') {
+                    inString = false
+                }
+                i++
+                continue
+            }
+            if (c == '"') {
+                inString = true
+                noComments.append(c)
+                i++
+                continue
+            }
+            if (c == '/' && next == '/') {
+                i += 2
+                while (i < raw.length && raw[i] != '\n') i++
+                continue
+            }
+            if (c == '/' && next == '*') {
+                i += 2
+                while (i + 1 < raw.length && !(raw[i] == '*' && raw[i + 1] == '/')) i++
+                i += 2
+                continue
+            }
+            noComments.append(c)
+            i++
+        }
+
+        // Segunda pasada: quitar comas finales antes de '}' o ']' fuera de cadenas
+        val cleaned = noComments.toString()
+        val result = StringBuilder(cleaned.length)
+        i = 0
+        inString = false
+        escaped = false
+        while (i < cleaned.length) {
+            val c = cleaned[i]
+            if (inString) {
+                result.append(c)
+                if (escaped) escaped = false
+                else if (c == '\\') escaped = true
+                else if (c == '"') inString = false
+                i++
+                continue
+            }
+            if (c == '"') {
+                inString = true
+                result.append(c)
+                i++
+                continue
+            }
+            if (c == ',') {
+                var j = i + 1
+                while (j < cleaned.length && cleaned[j].isWhitespace()) j++
+                if (j < cleaned.length && (cleaned[j] == '}' || cleaned[j] == ']')) {
+                    i++
+                    continue
+                }
+            }
+            result.append(c)
+            i++
+        }
+        return result.toString()
+    }
+
+    private fun flattenJsonToEnvMap(
+        json: JSONObject,
+        prefix: String,
+        outMap: LinkedHashMap<String, String>
+    ) {
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val fullKey = if (prefix.isEmpty()) k else "${prefix}__${k}"
+            val v = json.opt(k)
+            when (v) {
+                is JSONObject -> flattenJsonToEnvMap(v, fullKey, outMap)
+                is JSONArray -> outMap[fullKey] = v.toString()
+                JSONObject.NULL, null -> {}
+                else -> outMap[fullKey] = v.toString()
+            }
+        }
+    }
+
+    private fun parseAppSettingsMap(file: File): LinkedHashMap<String, String> {
+        val map = LinkedHashMap<String, String>()
+        runCatching {
+            val cleanJson = stripJsonCommentsAndTrailingCommas(file.readText(Charsets.UTF_8))
+            val obj = JSONObject(cleanJson)
+            flattenJsonToEnvMap(obj, "", map)
+        }
+        return map
+    }
+
+    private fun applyFlattenedVarToJson(root: JSONObject, flatKey: String, rawValue: String) {
+        val segments = flatKey.split("__", ":").filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return
+        var cur = root
+        for (idx in 0 until segments.size - 1) {
+            val seg = segments[idx]
+            val existingChild = cur.opt(seg)
+            cur = if (existingChild is JSONObject) {
+                existingChild
+            } else {
+                val created = JSONObject()
+                cur.put(seg, created)
+                created
+            }
+        }
+        val leafKey = segments.last()
+        val existingLeaf = cur.opt(leafKey)
+        val typedVal: Any = when {
+            existingLeaf is Boolean && (rawValue.equals("true", true) || rawValue.equals("false", true)) ->
+                rawValue.equals("true", true)
+            existingLeaf is Number && rawValue.toLongOrNull() != null ->
+                rawValue.toLong()
+            existingLeaf is Number && rawValue.toDoubleOrNull() != null ->
+                rawValue.toDouble()
+            rawValue.startsWith("[") && rawValue.endsWith("]") ->
+                runCatching { JSONArray(rawValue) }.getOrDefault(rawValue)
+            else -> rawValue
+        }
+        cur.put(leafKey, typedVal)
     }
 
     private fun readEnvMapFromAppName(appName: String): LinkedHashMap<String, String> {
@@ -2841,7 +2995,9 @@ class EmbeddedControlPlaneServer(
         val baseDir = File(deployedAppsBaseDir, appName)
         if (!baseDir.exists()) return
         val appRoot = resolveEffectiveAppRoot(baseDir)
-        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: appRoot
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile
+            ?: findDotnetEntryAssembly(appRoot)?.second
+            ?: appRoot
         val primaryEnv = File(appRoot, ".env")
         val existingFile = findExistingEnvFile(appRoot)
 
@@ -2869,13 +3025,27 @@ class EmbeddedControlPlaneServer(
         val appPort = appInfo?.optInt("activePort", 3001) ?: 3001
         val savedDb = appInfo?.optString("dbName")?.takeIf { it.isNotBlank() } ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
 
+        val isDotnet = findDotnetEntryAssembly(appRoot) != null
+        val appSettingsFile = findAppSettingsFile(appRoot)
         val envFile = findExistingEnvFile(appRoot)
         val hasEnvFile = envFile != null && envFile.exists()
-        val rawMap = readEnvMapFromAppName(appName)
 
-        val effectiveDb = rawMap["DB_NAME"]?.takeIf { it.isNotBlank() }
-            ?: rawMap["DB_DATABASE"]?.takeIf { it.isNotBlank() }
-            ?: rawMap["DATABASE"]?.takeIf { it.isNotBlank() }
+        val rawEnvMap = readEnvMapFromAppName(appName)
+        val appSettingsMap = if (appSettingsFile != null) parseAppSettingsMap(appSettingsFile) else LinkedHashMap()
+
+        val mergedMap = LinkedHashMap<String, String>()
+        if (appSettingsMap.isNotEmpty()) {
+            mergedMap.putAll(appSettingsMap)
+        }
+        if (rawEnvMap.isNotEmpty()) {
+            for ((k, v) in rawEnvMap) {
+                mergedMap[k] = v
+            }
+        }
+
+        val effectiveDb = mergedMap["DB_NAME"]?.takeIf { it.isNotBlank() }
+            ?: mergedMap["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: mergedMap["DATABASE"]?.takeIf { it.isNotBlank() }
             ?: savedDb
 
         val defaultsObj = JSONObject()
@@ -2888,31 +3058,37 @@ class EmbeddedControlPlaneServer(
             .put("NODE_ENV", "production")
 
         val variablesArr = JSONArray()
-        if (rawMap.isNotEmpty()) {
-            for ((k, v) in rawMap) {
+        if (mergedMap.isNotEmpty()) {
+            for ((k, v) in mergedMap) {
                 variablesArr.put(JSONObject().put("key", k).put("value", v))
             }
         } else {
-            // Si el proyecto no traía .env o estaba vacío, mostrar las variables activas por defecto
             val defaultKeys = listOf("PORT", "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME", "NODE_ENV")
             for (k in defaultKeys) {
                 variablesArr.put(JSONObject().put("key", k).put("value", defaultsObj.optString(k, "")))
             }
         }
 
-        val rawText = if (hasEnvFile) {
-            runCatching { envFile!!.readText(Charsets.UTF_8) }.getOrDefault("")
-        } else {
-            (0 until variablesArr.length()).joinToString("\n") { idx ->
-                val item = variablesArr.getJSONObject(idx)
-                "${item.optString("key")}=${item.optString("value")}"
-            }
+        val configType = if (isDotnet || appSettingsFile != null) "appsettings" else "env"
+        val rawText = when {
+            configType == "appsettings" && appSettingsFile != null ->
+                runCatching { appSettingsFile.readText(Charsets.UTF_8) }.getOrDefault("")
+            hasEnvFile ->
+                runCatching { envFile!!.readText(Charsets.UTF_8) }.getOrDefault("")
+            else ->
+                (0 until variablesArr.length()).joinToString("\n") { idx ->
+                    val item = variablesArr.getJSONObject(idx)
+                    "${item.optString("key")}=${item.optString("value")}"
+                }
         }
 
         return JSONObject()
             .put("appName", appName)
-            .put("hasEnvFile", hasEnvFile)
-            .put("envFileName", envFile?.name ?: ".env")
+            .put("configType", configType)
+            .put("isDotnet", isDotnet)
+            .put("hasAppsettings", appSettingsFile != null)
+            .put("hasEnvFile", hasEnvFile || appSettingsFile != null)
+            .put("envFileName", if (configType == "appsettings" && appSettingsFile != null) appSettingsFile.name else (envFile?.name ?: ".env"))
             .put("variables", variablesArr)
             .put("rawContent", rawText)
             .put("injectedDefaults", defaultsObj)
@@ -2924,35 +3100,81 @@ class EmbeddedControlPlaneServer(
             throw IllegalStateException("El directorio del proyecto '$appName' no existe.")
         }
         val appRoot = resolveEffectiveAppRoot(baseDir)
-        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: appRoot
+        val dotnetContentRoot = findDotnetEntryAssembly(appRoot)?.second
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: dotnetContentRoot ?: appRoot
+        val appSettingsFile = findAppSettingsFile(appRoot)
+        val isDotnet = findDotnetEntryAssembly(appRoot) != null || appSettingsFile != null
 
         val finalMap = LinkedHashMap<String, String>()
+        val rawContentPayload = payload.optString("rawContent", "").trim()
         val varsArr = payload.optJSONArray("variables")
-        if (varsArr != null) {
-            for (i in 0 until varsArr.length()) {
-                val obj = varsArr.optJSONObject(i) ?: continue
-                val k = obj.optString("key", "").trim().replace(Regex("[^a-zA-Z0-9_]"), "")
-                val v = obj.optString("value", "").trim()
-                if (k.isNotEmpty()) {
-                    finalMap[k] = v
-                }
-            }
-        } else if (payload.has("rawContent")) {
-            val raw = payload.optString("rawContent", "")
-            raw.lines().forEach { line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
-                    val k = trimmed.substringBefore("=").trim()
-                    val v = trimmed.substringAfter("=").trim().trim('"', '\'')
-                    if (k.isNotEmpty()) finalMap[k] = v
-                }
-            }
-        }
 
-        val content = finalMap.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n"
-        File(appRoot, ".env").writeText(content, Charsets.UTF_8)
-        if (entryDir.canonicalPath != appRoot.canonicalPath) {
-            runCatching { File(entryDir, ".env").writeText(content, Charsets.UTF_8) }
+        // Caso A: Edición directa en formato JSON (appsettings.json)
+        if (payload.has("rawContent") && rawContentPayload.startsWith("{")) {
+            val cleanJson = stripJsonCommentsAndTrailingCommas(rawContentPayload)
+            val parsedObj = try {
+                JSONObject(cleanJson)
+            } catch (e: Exception) {
+                throw IllegalArgumentException("El contenido JSON de appsettings.json tiene un error de sintaxis: ${e.message}")
+            }
+            val targetAppSettings = appSettingsFile ?: File(dotnetContentRoot ?: appRoot, "appsettings.json")
+            targetAppSettings.writeText(rawContentPayload + "\n", Charsets.UTF_8)
+            if (dotnetContentRoot != null && dotnetContentRoot.canonicalPath != appRoot.canonicalPath && File(appRoot, "appsettings.json").exists()) {
+                runCatching { File(appRoot, "appsettings.json").writeText(rawContentPayload + "\n", Charsets.UTF_8) }
+            }
+            flattenJsonToEnvMap(parsedObj, "", finalMap)
+            // Eliminar posibles sobrescrituras viejas en .env si el usuario editó directamente appsettings.json
+            val envInRoot = File(appRoot, ".env")
+            val envInEntry = File(entryDir, ".env")
+            if (envInRoot.exists()) runCatching { envInRoot.delete() }
+            if (envInEntry.exists()) runCatching { envInEntry.delete() }
+        } else {
+            // Caso B: Filas clave = valor o texto .env
+            if (varsArr != null) {
+                for (i in 0 until varsArr.length()) {
+                    val obj = varsArr.optJSONObject(i) ?: continue
+                    val k = obj.optString("key", "").trim().replace(Regex("[^a-zA-Z0-9_.:-]"), "")
+                    val v = obj.optString("value", "").trim()
+                    if (k.isNotEmpty()) {
+                        finalMap[k] = v
+                    }
+                }
+            } else if (payload.has("rawContent")) {
+                rawContentPayload.lines().forEach { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                        val k = trimmed.substringBefore("=").trim()
+                        val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                        if (k.isNotEmpty()) finalMap[k] = v
+                    }
+                }
+            }
+
+            if (isDotnet && appSettingsFile != null) {
+                // Actualizar las claves correspondientes dentro de appsettings.json manteniendo su estructura anidada
+                val existingObj = runCatching {
+                    JSONObject(stripJsonCommentsAndTrailingCommas(appSettingsFile.readText(Charsets.UTF_8)))
+                }.getOrDefault(JSONObject())
+                val appSettingsKeys = parseAppSettingsMap(appSettingsFile).keys
+
+                val updatedJsonObj = JSONObject(existingObj.toString())
+                for ((k, v) in finalMap) {
+                    if (appSettingsKeys.contains(k) || k.contains("__") || k.contains(":")) {
+                        applyFlattenedVarToJson(updatedJsonObj, k, v)
+                    }
+                }
+                val formattedJson = updatedJsonObj.toString(2).replace("\\/", "/") + "\n"
+                appSettingsFile.writeText(formattedJson, Charsets.UTF_8)
+                if (dotnetContentRoot != null && dotnetContentRoot.canonicalPath != appRoot.canonicalPath && File(appRoot, "appsettings.json").exists()) {
+                    runCatching { File(appRoot, "appsettings.json").writeText(formattedJson, Charsets.UTF_8) }
+                }
+            }
+
+            val envContent = finalMap.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n"
+            File(appRoot, ".env").writeText(envContent, Charsets.UTF_8)
+            if (entryDir.canonicalPath != appRoot.canonicalPath) {
+                runCatching { File(entryDir, ".env").writeText(envContent, Charsets.UTF_8) }
+            }
         }
 
         // Sincronizar DB_NAME con la configuración del proyecto y crear la BD si no existía
@@ -2971,12 +3193,12 @@ class EmbeddedControlPlaneServer(
         }
 
         appRestartCounts[appName] = 0
-        appendAppLog(appName, "[CPS-Env] ⚙️ Archivo .env actualizado (${finalMap.size} variables). Reiniciando servicio...")
+        appendAppLog(appName, "[CPS-Env] ⚙️ Configuración (${if (isDotnet) "appsettings.json / .env" else ".env"}) actualizada (${finalMap.size} variables). Reiniciando servicio...")
         startDedicatedAppServer(appName, appPort)
 
         return JSONObject()
             .put("status", "success")
-            .put("message", "Variables .env guardadas y servicio '$appName' reiniciado.")
+            .put("message", "Configuración guardada y servicio '$appName' reiniciado.")
             .put("env", getAppEnvJson(appName))
     }
 

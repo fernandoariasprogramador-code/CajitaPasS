@@ -168,6 +168,129 @@ function authHeaders(extra = {}) {
   };
 }
 
+/**
+ * Copia texto al portapapeles de forma universal:
+ * - Usa Clipboard API cuando hay contexto seguro (HTTPS / localhost).
+ * - Usa respaldo con textarea + document.execCommand('copy') para HTTP en IP LAN (http://192.168.x.x:4000)
+ *   o WebViews Android donde navigator.clipboard no está disponible.
+ */
+async function copyTextToClipboard(rawText) {
+  const text = String(rawText ?? '');
+  if (!text) return false;
+
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_e) {}
+  }
+
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('autocomplete', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '0';
+    ta.style.width = '2em';
+    ta.style.height = '2em';
+    ta.style.padding = '0';
+    ta.style.border = 'none';
+    ta.style.outline = 'none';
+    ta.style.boxShadow = 'none';
+    ta.style.background = 'transparent';
+    ta.style.opacity = '0.01';
+    ta.style.zIndex = '25000';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const copied = document.execCommand('copy');
+    ta.remove();
+    return Boolean(copied);
+  } catch (_err) {
+    return false;
+  }
+}
+
+function stripJsonCommentsClient(raw) {
+  let noComments = '';
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    const next = i + 1 < raw.length ? raw[i + 1] : '';
+    if (inStr) {
+      noComments += c;
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      noComments += c;
+      continue;
+    }
+    if (c === '/' && next === '/') {
+      i += 2;
+      while (i < raw.length && raw[i] !== '\n') i++;
+      i--;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      i += 2;
+      while (i + 1 < raw.length && !(raw[i] === '*' && raw[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    noComments += c;
+  }
+  let res = '';
+  inStr = false;
+  esc = false;
+  for (let i = 0; i < noComments.length; i++) {
+    const c = noComments[i];
+    if (inStr) {
+      res += c;
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      res += c;
+      continue;
+    }
+    if (c === ',') {
+      let j = i + 1;
+      while (j < noComments.length && /\s/.test(noComments[j])) j++;
+      if (j < noComments.length && (noComments[j] === '}' || noComments[j] === ']')) {
+        continue;
+      }
+    }
+    res += c;
+  }
+  return res;
+}
+
+function flattenJsonVarsClient(obj, prefix = '', out = []) {
+  if (!obj || typeof obj !== 'object') return out;
+  for (const [k, v] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}__${k}` : k;
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      flattenJsonVarsClient(v, fullKey, out);
+    } else if (Array.isArray(v)) {
+      out.push({ key: fullKey, value: JSON.stringify(v) });
+    } else if (v !== undefined && v !== null) {
+      out.push({ key: fullKey, value: String(v) });
+    }
+  }
+  return out;
+}
+
 // ============================================================================
 // 2. NAVEGACIÓN ENTRE VISTAS Y PESTAÑAS
 // ============================================================================
@@ -1093,6 +1216,8 @@ const btnCloseEnvModalTop = document.getElementById('btnCloseEnvModalTop');
 
 let activeEnvAppName = '';
 let activeEnvInjectedDefaults = {};
+let activeEnvConfigType = 'env';
+let activeEnvRawContent = '';
 let isRawEnvMode = false;
 
 async function openEnvEditorModal(appName) {
@@ -1104,7 +1229,7 @@ async function openEnvEditorModal(appName) {
   envRowsContainer.classList.remove('hidden');
   envRawContainer.classList.add('hidden');
   if (btnToggleRawEnvMode) btnToggleRawEnvMode.textContent = '📝 Modo Texto .env';
-  envRowsContainer.innerHTML = `<div style="color:var(--text-muted);padding:0.5rem;">Cargando archivo .env de "${appName}"...</div>`;
+  envRowsContainer.innerHTML = `<div style="color:var(--text-muted);padding:0.5rem;">Cargando configuración de "${appName}"...</div>`;
   modalEnvEditor.classList.remove('hidden');
 
   try {
@@ -1113,15 +1238,27 @@ async function openEnvEditorModal(appName) {
     });
     const data = await res.json();
     activeEnvInjectedDefaults = data.injectedDefaults || {};
+    activeEnvConfigType = data.configType || 'env';
+    activeEnvRawContent = data.rawContent || '';
+
+    if (btnToggleRawEnvMode) {
+      btnToggleRawEnvMode.textContent =
+        activeEnvConfigType === 'appsettings' ? '📝 Modo JSON (appsettings.json)' : '📝 Modo Texto .env';
+    }
+
     if (envModalSubtitle) {
-      envModalSubtitle.innerHTML = data.hasEnvFile
-        ? `📂 Mostrando los valores actuales del archivo <code>${data.envFileName || '.env'}</code> incluido en tu proyecto.`
-        : `⚡ Tu proyecto no incluía un archivo <code>.env</code>; mostrando las variables activas inyectadas por CajitaPaaS.`;
+      if (activeEnvConfigType === 'appsettings') {
+        envModalSubtitle.innerHTML = `🧩 Proyecto <strong>.NET</strong> · Mostrando las claves de <code>${data.envFileName || 'appsettings.json'}</code> (usa <code>__</code> para secciones anidadas). Al guardar se actualiza <code>appsettings.json</code> y se reinicia el servicio.`;
+      } else {
+        envModalSubtitle.innerHTML = data.hasEnvFile
+          ? `📂 Mostrando los valores actuales del archivo <code>${data.envFileName || '.env'}</code> incluido en tu proyecto.`
+          : `⚡ Tu proyecto no incluía un archivo <code>.env</code>; mostrando las variables activas inyectadas por CajitaPaaS.`;
+      }
     }
     renderEnvRows(Array.isArray(data.variables) ? data.variables : []);
-    if (envRawTextarea) envRawTextarea.value = data.rawContent || '';
+    if (envRawTextarea) envRawTextarea.value = activeEnvRawContent;
   } catch (_err) {
-    envRowsContainer.innerHTML = `<div style="color:var(--danger);padding:0.5rem;">Error cargando las variables .env</div>`;
+    envRowsContainer.innerHTML = `<div style="color:var(--danger);padding:0.5rem;">Error cargando las variables de configuración</div>`;
   }
 }
 
@@ -1141,7 +1278,7 @@ function addEnvRowToDom(key = '', value = '') {
   row.className = 'env-kv-row';
   row.style.cssText = 'display:flex;gap:0.45rem;align-items:center;';
   row.innerHTML = `
-    <input type="text" class="env-key-input" placeholder="CLAVE (ej. DB_NAME)" value="${String(key).replace(/"/g, '&quot;')}" style="flex:1;min-height:40px;padding:0.4rem 0.65rem;font-family:monospace;font-size:0.88rem;font-weight:700;color:var(--accent-mint);" />
+    <input type="text" class="env-key-input" placeholder="CLAVE (ej. ConnectionStrings__CadenaSQL)" value="${String(key).replace(/"/g, '&quot;')}" style="flex:1;min-height:40px;padding:0.4rem 0.65rem;font-family:monospace;font-size:0.88rem;font-weight:700;color:var(--accent-mint);" />
     <span style="color:var(--text-muted);font-weight:800;">=</span>
     <input type="text" class="env-val-input" placeholder="Valor..." value="${String(value).replace(/"/g, '&quot;')}" style="flex:1.6;min-height:40px;padding:0.4rem 0.65rem;font-family:monospace;font-size:0.88rem;" />
     <button type="button" class="btn btn-danger btn-small btn-remove-env-row" style="min-height:40px;padding:0.35rem 0.65rem;" title="Eliminar variable">🗑️</button>
@@ -1165,7 +1302,11 @@ function collectEnvVariablesFromRows() {
 if (btnAddEnvRow) {
   btnAddEnvRow.addEventListener('click', () => {
     if (isRawEnvMode) {
-      envRawTextarea.value += (envRawTextarea.value.endsWith('\n') || !envRawTextarea.value ? '' : '\n') + 'NUEVA_VARIABLE=valor\n';
+      if (activeEnvConfigType === 'appsettings' && envRawTextarea.value.trim().startsWith('{')) {
+        alert('En modo JSON edita directamente dentro de las llaves { } o cambia a "Modo Filas Visual" para añadir una fila.');
+      } else {
+        envRawTextarea.value += (envRawTextarea.value.endsWith('\n') || !envRawTextarea.value ? '' : '\n') + 'NUEVA_VARIABLE=valor\n';
+      }
     } else {
       addEnvRowToDom('', '');
       envRowsContainer.scrollTop = envRowsContainer.scrollHeight;
@@ -1177,19 +1318,35 @@ if (btnFillDefaultDbEnv) {
   btnFillDefaultDbEnv.addEventListener('click', () => {
     const current = collectEnvVariablesFromRows();
     const map = new Map(current.map((i) => [i.key, i.value]));
-    const defaults = {
-      DB_HOST: activeEnvInjectedDefaults.DB_HOST || '127.0.0.1',
-      DB_PORT: activeEnvInjectedDefaults.DB_PORT || '3306',
-      DB_USER: activeEnvInjectedDefaults.DB_USER || 'cajita_admin',
-      DB_PASSWORD: activeEnvInjectedDefaults.DB_PASSWORD || 'cajitapaas2026',
-      DB_NAME: activeEnvInjectedDefaults.DB_NAME || 'cajitapaas'
-    };
+    const dbHost = activeEnvInjectedDefaults.DB_HOST || '127.0.0.1';
+    const dbPort = activeEnvInjectedDefaults.DB_PORT || '3306';
+    const dbUser = activeEnvInjectedDefaults.DB_USER || 'cajita_admin';
+    const dbPass = activeEnvInjectedDefaults.DB_PASSWORD || 'cajitapaas2026';
+    const dbName = activeEnvInjectedDefaults.DB_NAME || 'cajitapaas';
+
+    const defaults =
+      activeEnvConfigType === 'appsettings'
+        ? {
+            ConnectionStrings__DefaultConnection: `Server=${dbHost};Port=${dbPort};Database=${dbName};Uid=${dbUser};Pwd=${dbPass};`,
+            DB_HOST: dbHost,
+            DB_PORT: dbPort,
+            DB_USER: dbUser,
+            DB_PASSWORD: dbPass,
+            DB_NAME: dbName
+          }
+        : {
+            DB_HOST: dbHost,
+            DB_PORT: dbPort,
+            DB_USER: dbUser,
+            DB_PASSWORD: dbPass,
+            DB_NAME: dbName
+          };
     for (const [k, v] of Object.entries(defaults)) {
       map.set(k, v);
     }
     const merged = Array.from(map.entries()).map(([key, value]) => ({ key, value }));
     renderEnvRows(merged);
-    if (envRawTextarea) {
+    if (envRawTextarea && activeEnvConfigType !== 'appsettings') {
       envRawTextarea.value = merged.map((i) => `${i.key}=${i.value}`).join('\n');
     }
   });
@@ -1199,27 +1356,70 @@ if (btnToggleRawEnvMode) {
   btnToggleRawEnvMode.addEventListener('click', () => {
     isRawEnvMode = !isRawEnvMode;
     if (isRawEnvMode) {
-      const vars = collectEnvVariablesFromRows();
-      envRawTextarea.value = vars.map((i) => `${i.key}=${i.value}`).join('\n');
+      if (activeEnvConfigType === 'appsettings') {
+        try {
+          const clean = stripJsonCommentsClient(activeEnvRawContent || '{}');
+          const baseObj = clean.trim().startsWith('{') ? JSON.parse(clean) : {};
+          for (const item of collectEnvVariablesFromRows()) {
+            const segs = item.key.split(/__|:/).filter(Boolean);
+            let cur = baseObj;
+            for (let i = 0; i < segs.length - 1; i++) {
+              if (!cur[segs[i]] || typeof cur[segs[i]] !== 'object' || Array.isArray(cur[segs[i]])) {
+                cur[segs[i]] = {};
+              }
+              cur = cur[segs[i]];
+            }
+            const leaf = segs[segs.length - 1];
+            const prev = cur[leaf];
+            if (typeof prev === 'boolean' && /^(true|false)$/i.test(item.value)) {
+              cur[leaf] = /^true$/i.test(item.value);
+            } else if (typeof prev === 'number' && item.value !== '' && !Number.isNaN(Number(item.value))) {
+              cur[leaf] = Number(item.value);
+            } else {
+              cur[leaf] = item.value;
+            }
+          }
+          envRawTextarea.value = JSON.stringify(baseObj, null, 2);
+        } catch (_e) {
+          envRawTextarea.value = activeEnvRawContent || '{}';
+        }
+      } else {
+        const vars = collectEnvVariablesFromRows();
+        envRawTextarea.value = vars.map((i) => `${i.key}=${i.value}`).join('\n');
+      }
       envRowsContainer.classList.add('hidden');
       envRawContainer.classList.remove('hidden');
       btnToggleRawEnvMode.textContent = '🔢 Modo Filas Visual';
     } else {
-      const parsed = [];
-      envRawTextarea.value.split('\n').forEach((line) => {
-        const t = line.trim();
-        if (t && !t.startsWith('#') && t.includes('=')) {
-          const idx = t.indexOf('=');
-          parsed.push({
-            key: t.slice(0, idx).trim(),
-            value: t.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '')
-          });
+      const rawVal = envRawTextarea.value.trim();
+      let parsed = [];
+      if (rawVal.startsWith('{')) {
+        try {
+          const obj = JSON.parse(stripJsonCommentsClient(rawVal));
+          parsed = flattenJsonVarsClient(obj, '', []);
+          activeEnvRawContent = rawVal;
+        } catch (err) {
+          alert(`El JSON tiene un error de sintaxis antes de cambiar de vista: ${err.message}`);
+          isRawEnvMode = true;
+          return;
         }
-      });
+      } else {
+        envRawTextarea.value.split('\n').forEach((line) => {
+          const t = line.trim();
+          if (t && !t.startsWith('#') && t.includes('=')) {
+            const idx = t.indexOf('=');
+            parsed.push({
+              key: t.slice(0, idx).trim(),
+              value: t.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '')
+            });
+          }
+        });
+      }
       renderEnvRows(parsed);
       envRawContainer.classList.add('hidden');
       envRowsContainer.classList.remove('hidden');
-      btnToggleRawEnvMode.textContent = '📝 Modo Texto .env';
+      btnToggleRawEnvMode.textContent =
+        activeEnvConfigType === 'appsettings' ? '📝 Modo JSON (appsettings.json)' : '📝 Modo Texto .env';
     }
   });
 }
@@ -1246,15 +1446,15 @@ if (btnSaveEnvModal) {
         launchConfetti();
         showResultModal({
           type: 'success',
-          title: '¡Variables .env Actualizadas!',
-          desc: `Se guardó el archivo .env de "${activeEnvAppName}" y el servicio se reinició con la nueva configuración.`,
+          title: '¡Configuración Actualizada!',
+          desc: `Se guardaron los cambios de "${activeEnvAppName}" y el servicio se reinició con la nueva configuración.`,
           pill: '⚙️ Aplicado en caliente sin resubir el .ZIP'
         });
       } else {
-        alert(data.error || 'No se pudo guardar el archivo .env');
+        alert(data.error || 'No se pudo guardar la configuración');
       }
     } catch (_err) {
-      alert('Error de conexión al guardar variables .env');
+      alert('Error de conexión al guardar la configuración');
     } finally {
       btnSaveEnvModal.disabled = false;
       btnSaveEnvModal.textContent = '💾 Guardar .env y Reiniciar App';
@@ -1286,7 +1486,7 @@ async function openLiveConsoleModal(appName) {
   activeConsoleAppName = appName;
   if (!modalLiveConsole) return;
   consoleModalAppName.textContent = appName;
-  liveConsolePre.textContent = 'Conectando con la salida estándar de Node.js...';
+  liveConsolePre.textContent = 'Conectando con la salida estándar de la aplicación...';
   modalLiveConsole.classList.remove('hidden');
 
   await refreshLiveConsoleLogs();
@@ -1311,7 +1511,7 @@ async function refreshLiveConsoleLogs() {
     if (!res.ok) return;
     const data = await res.json();
     const stateLabel = data.nodeRuntimeActive
-      ? '<span style="color:var(--accent-mint);font-weight:800;">🟢 Proceso Node.js Activo</span>'
+      ? '<span style="color:var(--accent-mint);font-weight:800;">🟢 Proceso Activo</span>'
       : `<span style="color:var(--amber);font-weight:800;">🟠 Estado: ${data.watchdogState || 'Inactivo'}</span>`;
     consoleModalMeta.innerHTML = `${stateLabel} · Puerto: <strong>:${data.port || 3001}</strong> · Límite RAM: <strong>${data.maxRamMb || 256} MB</strong> · Reinicios Watchdog: <strong>${data.restartCount || 0}</strong>`;
 
@@ -1319,7 +1519,7 @@ async function refreshLiveConsoleLogs() {
     const wasAtBottom = liveConsolePre.scrollHeight - liveConsolePre.scrollTop - liveConsolePre.clientHeight < 40;
     liveConsolePre.textContent = lines.length > 0
       ? lines.join('\n')
-      : 'Sin registros en consola todavía. Las llamadas console.log() y errores aparecerán aquí en vivo.';
+      : 'Sin registros en consola todavía. Las salidas y errores aparecerán aquí en vivo.';
     if (wasAtBottom) {
       liveConsolePre.scrollTop = liveConsolePre.scrollHeight;
     }
@@ -1359,13 +1559,12 @@ if (btnConsoleClearLogs) {
 
 if (btnConsoleCopyLogs) {
   btnConsoleCopyLogs.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(liveConsolePre.textContent || '');
-      btnConsoleCopyLogs.textContent = '✅ Copiado';
-      setTimeout(() => {
-        btnConsoleCopyLogs.textContent = '📋 Copiar';
-      }, 1500);
-    } catch (_e) {}
+    const text = liveConsolePre ? liveConsolePre.textContent || '' : '';
+    const ok = await copyTextToClipboard(text);
+    btnConsoleCopyLogs.textContent = ok ? '✅ ¡Copiado!' : '⚠️ Error al copiar';
+    setTimeout(() => {
+      btnConsoleCopyLogs.textContent = '📋 Copiar';
+    }, 1800);
   });
 }
 
@@ -1967,6 +2166,8 @@ if (tunnelEnabledSwitch) {
   });
 }
 
+const btnCopyTunnelLogs = document.getElementById('btnCopyTunnelLogs');
+
 if (btnRefreshTunnelStatus) {
   btnRefreshTunnelStatus.addEventListener('click', async () => {
     btnRefreshTunnelStatus.disabled = true;
@@ -1977,41 +2178,46 @@ if (btnRefreshTunnelStatus) {
   });
 }
 
+if (btnCopyTunnelLogs) {
+  btnCopyTunnelLogs.addEventListener('click', async () => {
+    const text = tunnelLogsPre ? tunnelLogsPre.textContent || '' : '';
+    const ok = await copyTextToClipboard(text);
+    btnCopyTunnelLogs.textContent = ok ? '✅ ¡Logs Copiados!' : '⚠️ Error al copiar';
+    setTimeout(() => {
+      btnCopyTunnelLogs.textContent = '📋 Copiar Logs';
+    }, 1800);
+  });
+}
+
 if (btnCopyOrigin8080) {
   btnCopyOrigin8080.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText('http://127.0.0.1:8080');
-      btnCopyOrigin8080.textContent = '✅ Copiado';
-      setTimeout(() => {
-        btnCopyOrigin8080.textContent = '📋 Copiar';
-      }, 1500);
-    } catch (_e) {}
+    const ok = await copyTextToClipboard('http://127.0.0.1:8080');
+    btnCopyOrigin8080.textContent = ok ? '✅ ¡Copiado!' : '⚠️ Error al copiar';
+    setTimeout(() => {
+      btnCopyOrigin8080.textContent = '📋 Copiar';
+    }, 1500);
   });
 }
 
 if (btnCopyLanUrl) {
   btnCopyLanUrl.addEventListener('click', async () => {
     const urlText = topLanUrl ? topLanUrl.textContent.trim() : '';
-    try {
-      await navigator.clipboard.writeText(urlText);
-      btnCopyLanUrl.textContent = '✅ ¡IP:Puerto Copiado!';
-      setTimeout(() => {
-        btnCopyLanUrl.textContent = '📋 Copiar IP:Puerto Local';
-      }, 2000);
-    } catch (_e) {}
+    const ok = await copyTextToClipboard(urlText);
+    btnCopyLanUrl.textContent = ok ? '✅ ¡IP:Puerto Copiado!' : '⚠️ Error al copiar';
+    setTimeout(() => {
+      btnCopyLanUrl.textContent = '📋 Copiar IP:Puerto Local';
+    }, 2000);
   });
 }
 
 if (btnCopyTunnelUrl) {
   btnCopyTunnelUrl.addEventListener('click', async () => {
     const urlText = topTunnelUrl ? topTunnelUrl.textContent.trim() : '';
-    try {
-      await navigator.clipboard.writeText(urlText);
-      btnCopyTunnelUrl.textContent = '✅ ¡Link Copiado!';
-      setTimeout(() => {
-        btnCopyTunnelUrl.textContent = '📋 Copiar Link Público';
-      }, 2000);
-    } catch (_e) {}
+    const ok = await copyTextToClipboard(urlText);
+    btnCopyTunnelUrl.textContent = ok ? '✅ ¡Link Copiado!' : '⚠️ Error al copiar';
+    setTimeout(() => {
+      btnCopyTunnelUrl.textContent = '📋 Copiar Link Público';
+    }, 2000);
   });
 }
 
