@@ -4,7 +4,7 @@
 
 <h1 align="center">📦 CPS (CajitaPaaS)</h1>
 <p align="center">
-  <b>Convierte cualquier teléfono Android en tu propio servidor PaaS de Internet gratis, autónomo y sin complicaciones.</b>
+  <b>Convierte cualquier teléfono Android ARM64 en tu propio servidor PaaS de Internet gratis, autónomo y sin complicaciones.</b>
 </p>
 
 <p align="center">
@@ -29,25 +29,36 @@
 
 ## 🤔 ¿Qué es esto? (Explicado fácil y sin palabras raras)
 
-Imagina que creaste una **página web**, una **app con backend**, un **bot** o una **base de datos** para tu negocio o proyecto de estudio. Normalmente, para que otras personas puedan entrar desde cualquier lugar del mundo por Internet, tendrías que **alquilar un servidor en la nube** (AWS, Google Cloud, DigitalOcean, Heroku) y pagar todos los meses en dólares.
+Imagina que creaste una **página web**, una **app con backend**, un **sistema MVC/Razor en .NET** o una **base de datos** para tu negocio o proyecto de estudio. Normalmente, para que otras personas puedan entrar desde cualquier lugar del mundo por Internet, tendrías que **alquilar un servidor en la nube** (AWS, Google Cloud, DigitalOcean, Heroku) y pagar todos los meses en dólares.
 
 **¿Y si pudieras usar ese celular Android que tienes guardado en un cajón como si fuera un servidor profesional en la nube?** 📱⚡
 
-Eso es **CPS (`CajitaPaaS`)**: una plataforma PaaS (Platform as a Service) nativa para Android que instalas en tu teléfono y que, por dentro, arma automáticamente una infraestructura completa capaz de:
+Eso es **CPS (`CajitaPaaS`)**: una plataforma PaaS (Platform as a Service) nativa para Android que instalas como APK y que arma automáticamente una infraestructura completa dentro del dispositivo:
 
-1. 🌐 **Publicar tus proyectos en Internet al instante**: Te entrega un link público HTTPS seguro (`https://xxxx.trycloudflare.com`) sin tocar tu módem/router ni abrir puertos.
-2. 🔄 **Actualizar sin caídas (Sistema Blue/Green)**: Puedes subir actualizaciones de tu app en vivo. La versión nueva se levanta en un slot paralelo y el tráfico conmuta de inmediato sin que tus usuarios noten interrupciones.
-3. 🗄️ **Base de Datos MariaDB 10.11 Nativa con InnoDB**: Un motor relacional completo (no SQLite recortado) con transacciones ACID, catálogo `information_schema` y compatibilidad total con **DBeaver**, **MySQL Workbench** o **TablePlus** desde tu computadora en el puerto `:3306`.
-4. ⚡ **Runtime Node.js v20 Nativo en ARM64**: Ejecuta directamente tus APIs en Node.js en el teléfono, con los módulos más populares ya preinstalados (`express`, `mariadb`, `mysql2`, `cors`, `dotenv`, `bcryptjs`, etc.).
-5. 🔀 **Múltiples Bases de Datos Dinámicas**: Crea y asigna diferentes bases de datos (`cajitapaas`, `app_pruebas`, `tienda_db`) a cada backend desde el panel o cámbialas en caliente sin reinstalar.
-6. 🔋 **Funciona 24/7 con Pantalla Apagada**: Integra bloqueos de energía (`PARTIAL_WAKE_LOCK` + `WIFI_MODE_FULL_LOW_LATENCY`) para evitar que el modo Doze de Android desconecte tus servicios.
-7. 📡 **Supervivencia de Red Wi-Fi (Opcional en Modo Root)**: Si el router de tu casa se apaga, el celular puede levantar automáticamente una **Zona Wi-Fi (Hotspot)** de emergencia para que la red local siga funcionando.
+8. 🌐 **Publicar tus proyectos en Internet al instante**: incluye `cloudflared` nativo que entrega un link público HTTPS seguro (`https://xxxx.trycloudflare.com`) sin tocar el router ni abrir puertos, o te permite conectar tu **propio dominio fijo** con token de Cloudflare Zero Trust (`HTTP/2` o `QUIC`).
+9. ⚡ **Multi-Runtime Nativo en ARM64 (Sin Root ni PRoot pesado)**:
+   - **Node.js v20 (Alpine ARM64)**: ejecuta APIs Backend directamente con 18 módulos populares preinstalados (`express`, `mariadb`, `mysql2`, `cors`, `dotenv`, `bcryptjs`, etc.), almacén compartido de paquetes e instalador NPM bajo demanda.
+   - **.NET 10.0 + ASP.NET Core 10 (Alpine ARM64)**: ejecuta Web APIs, aplicaciones MVC, Razor Pages y sistemas Fullstack en `.NET 6`, `.NET 7`, `.NET 8`, `.NET 9` y `.NET 10` mediante _roll-forward_ automático (`DOTNET_ROLL_FORWARD=Major`) y un launcher ELF nativo con soporte seccomp para Android.
+   - **Frontends Estáticos y SPAs**: HTML/CSS/JS, React, Vue, Vite o Angular servidos con enrutamiento SPA y puente automático anti-CORS.
+10. 🔄 **Actualizar sin caídas (Blue/Green) y Multi-Servicio**: despliega por separado un **Frontend**, un **Backend / API** o un **Sistema Completo (Fullstack)** en puertos dedicados (`:3001`, `:3003`, `:3005`, ...) unificados bajo el Gateway HTTP (`:8080`, y `:80` automático en teléfonos con Root).
+11. 🗄️ **Base de Datos MariaDB 10.11 Nativa con InnoDB**: un motor relacional real (no SQLite recortado) con transacciones ACID, múltiples bases dinámicas, **Modo PC (Puente DBeaver/MySQL Workbench)** con control de tiempo e IP en `:3306` / `:13306`, **Exportación e Importación `.SQL`** y **Consultor SQL rápido en el navegador**.
+12. 📊 **Monitor y Gestor de Recursos en Vivo**: consulta cada 2 segundos el consumo real de RAM, CPU, hilos y disco (del celular, de MariaDB y de cada aplicación) y permite **agregar o quitar RAM, limitar núcleos de CPU, prioridad Linux (`nice`), worker threads o pausar/reanudar apps**.
+13. 🔋 **Funciona 24/7 con Pantalla Apagada**: utiliza `ForegroundService`, exención de optimización de batería (Doze), `PARTIAL_WAKE_LOCK`, `WIFI_MODE_FULL_LOW_LATENCY` y pulso _keep-alive_ cada 5 segundos.
+14. 📡 **Supervivencia de Red Wi-Fi (Opcional en Modo Root)**: si el router Wi-Fi se apaga, el celular puede levantar automáticamente una **Zona Wi-Fi (Hotspot)** de emergencia y sondear periódicamente el retorno del router.
+
+---
+
+## 📋 Requisitos del Teléfono
+
+- **Sistema Operativo**: Android **9.0 o superior** (`minSdk = 28`).
+- **Arquitectura de CPU**: **ARM64 (`arm64-v8a`)**.
+- **Root (`su`)**: **No obligatorio** — toda la plataforma (Panel Web, Gateway, MariaDB, Node.js, .NET 10 y Túnel Cloudflare) funciona sin Root. En dispositivos rooteados (Magisk, KernelSU, APatch) habilita funciones extra de red y energía.
 
 ---
 
 ## 📲 Descargar e Instalar la APK en tu Celular
 
-Tienes **dos opciones** para descargar el instalador en tu teléfono Android (arquitectura ARM64):
+Tienes **dos opciones** para descargar el instalador en tu teléfono Android ARM64:
 
 ### Opción 1: Descarga Directa (Recomendada) ⚡
 
@@ -64,100 +75,139 @@ Tienes **dos opciones** para descargar el instalador en tu teléfono Android (ar
 ## 🚀 Guía Rápida de Uso
 
 1. **Instala la APK** en tu teléfono Android (permite la instalación desde fuentes desconocidas si el sistema lo solicita).
-2. **Abre la app `CPS`**: Verás la notificación del servicio en segundo plano indicando que el motor está activo.
-3. **Crea tu contraseña de administrador**: En el primer inicio, define tu contraseña maestra para proteger el acceso.
-4. **Ingresa al Panel de Control Web**:
-   - Desde el navegador de tu computadora o del mismo celular, ingresa a `http://<IP_DE_TU_CELULAR>:4000` (la app te muestra la IP en pantalla, ej: `http://192.168.1.145:4000`).
-5. **¡Listo!** Ya puedes subir tus proyectos en formato `.zip` y gestionarlos visualmente.
+6. **Abre la app `CPS`**: acepta la exención de optimización de batería y el permiso de notificaciones para que el servidor corra estable en segundo plano; dentro de la app se abrirá el Panel Web integrado (`127.0.0.1:4000`).
+7. **Crea tu contraseña maestra de administrador**: en el primer ingreso, define la contraseña que protegerá el Panel de Control (incluye selector visual para mostrar/ocultar contraseña).
+8. **Accede desde tu PC o navegador externo**: entra a `http://<IP_DE_TU_CELULAR>:4000` (el panel te muestra tu IP local y también expone la URL remota bajo `/_control/` si activas el túnel público).
+9. **Despliega y administra**: sube tus proyectos `.zip` y gestiona apps, variables de entorno, dependencias, bases de datos, túnel y recursos desde las 4 pestañas del panel.
 
 ---
 
-## 📦 Cómo Empaquetar y Desplegar tus Proyectos (.ZIP)
 
-El panel de CajitaPaaS te permite desplegar dos tipos de aplicaciones: **Frontend** y **Backend API**.
+## 📦 Cómo Empaquetar y Desplegar tus Proyectos
+
+En la pestaña **🚀 1. Subir o Actualizar mis Apps** puedes desplegar tantos servicios como necesites eligiendo su identificador, rol, ruta pública en el Gateway (`/` o `/api/*`, `/crm/*`, etc.) y base de datos asociada:
+
+- 🖥️ **Frontend**: sitios HTML/CSS/JS o compilaciones React, Vue, Vite o Angular (`dist/` o `build/`).
+- ⚙️ **Backend / API**: APIs REST o microservicios en **Node.js** o **.NET / ASP.NET Core**.
+- 🚀 **Sistema Completo (Fullstack)**: aplicaciones que sirven vistas/estáticos y lógica de servidor en un mismo proyecto (por ejemplo, **ASP.NET Core MVC / Razor** o **Node.js + `public/`**).
+
+> [!NOTE]
+> El formulario **Subir App o Sistema en `.ZIP`** acepta paquetes de hasta **100 MB** y detecta automáticamente subcarpetas raíz únicas (por ejemplo si comprimiste la carpeta en lugar de solo su contenido). En la **APK Android embebida**, el código real de producción se sube mediante **`.ZIP`** (la tarjeta de GitHub está orientada al Control Plane Node.js PC/Termux con `simple-git`; en Android actúa solo como registro base si no hay archivos cargados).
 
 ### 1. Desplegar un Frontend (HTML, React, Vue, Vite, Angular)
 
-- **Qué comprimir**: Genera la compilación de producción de tu frontend (`npm run build` o `pnpm build`) y comprime los archivos que están dentro de la carpeta `dist/` o `build/` (donde reside el archivo `index.html` principal).
-- **Cómo subir**: En el panel, selecciona la pestaña **Subir Frontend**, asigna un nombre (ej. `tienda-front`), elige tu archivo `.zip` y presiona **Desplegar**.
-- **Resultado**: Tu frontend estará accesible en tu red local en `http://<IP_CELULAR>:8080/` y en la raíz del túnel público HTTPS (`https://xxxx.trycloudflare.com/`).
+- **Qué comprimir**: genera tu build de producción (`npm run build` o `pnpm build`) y comprime los archivos dentro de `dist/` o `build/` (donde reside `index.html`).
+- **Cómo subir**: elige rol **Frontend**, nombre (ej. `tienda-front`), ruta `/` y sube el `.zip`.
+- **Resultado**: tu frontend queda disponible en `http://<IP_CELULAR>:8080/` (o `http://<IP_CELULAR>/` si tienes Root) y en la raíz `/` del túnel HTTPS. Además incluye respaldo automático SPA (`index.html`) para rutas de React Router / Vue Router.
 
 ---
 
 ### 2. Desplegar un Backend API (Node.js)
 
-- **Qué comprimir**: Comprime tus archivos fuente: `server.js` (o `index.js`, `app.js`), tus carpetas de rutas (`routes/`), controladores (`controllers/`), modelos (`models/`), y tu `package.json` o `.env` (si los tienes).
+- **Qué comprimir**: comprime tus archivos fuente (`server.js`, `index.js`, `app.js` o el definido en `package.json` → `scripts.start` / `main`), rutas, controladores y tu `.env` (si lo tienes).
 
 > [!WARNING]
 >
-> ### ⚠️ REGLA DE ORO: ¡NUNCA INCLUYAS LA CARPETA `node_modules` EN EL ZIP!
 >
-> ❌ **No subas `node_modules` en tu archivo `.zip`**.
+> ### ⚠️ REGLA DE ORO: ¡NUNCA INCLUYAS `node_modules` EN EL `.ZIP`!
 >
-> **¿Por qué?**
->
-> 1. **Incompatibilidad de Arquitectura**: Los módulos con binarios nativos compilados en tu PC (Windows o Mac x86_64) fallarán al ejecutarse en el procesador ARM64 de tu teléfono Android.
-> 2. **Peso Innecesario**: Subir 100 MB o 300 MB de módulos ralentiza innecesariamente la subida y satura la memoria del celular.
-> 3. **CajitaPaaS ya incluye los paquetes preinstalados**: El motor de CPS viene equipado de fábrica con los paquetes más populares optimizados para ARM64.
+> 4. **Incompatibilidad de arquitectura**: los binarios nativos compilados en Windows/Mac (`x86_64`) fallarán en el procesador **ARM64** de Android.
+> 5. **Peso innecesario**: evita subir cientos de megabytes extra.
+> 6. **Módulos integrados y almacén compartido**: CajitaPaaS inyecta su preloader (`cps_node_preload.cjs`) para compartir dependencias globales sin duplicar espacio.
 
-#### 📚 Módulos Node.js incluidos de fábrica en CajitaPaaS:
+#### 📚 Módulos Node.js incluidos de fábrica en CajitaPaaS (`build_mariadb_alpine_arm64.sh`)
 
-| Categoría                     | Módulos Preinstalados en el Runtime            |
-| :---------------------------- | :--------------------------------------------- |
-| **Bases de Datos**            | `mariadb`, `mysql2`, `mysql`                   |
-| **Framework & Web**           | `express`, `cors`, `dotenv`, `axios`, `multer` |
-| **Autenticación & Seguridad** | `jsonwebtoken`, `bcryptjs`, `bcrypt`           |
-| **Utilidades**                | `uuid`, `path`, `fs`, `crypto`, `http`, etc.   |
+| Categoría                      | Módulos Preinstalados en el Runtime                                                   |
+| :----------------------------- | :------------------------------------------------------------------------------------ |
+| **Bases de Datos**             | `mariadb`, `mysql2`, `mysql`                                                          |
+| **Framework & Middleware Web** | `express`, `cors`, `body-parser`, `cookie-parser`, `morgan`, `helmet`, `compression`  |
+| **Validación & HTTP**          | `express-validator`, `http-errors`, `axios`, `multer`, `dotenv`                       |
+| **Autenticación & Utilidades** | `jsonwebtoken`, `bcryptjs`, alias `bcrypt` _(apunta a `bcryptjs` en JS puro)_, `uuid` |
 
-Si tu proyecto utiliza estos paquetes en sus `require(...)` o `import`, **funcionarán inmediatamente sin necesidad de subirlos ni instalarlos**.
 
-#### ➕ ¿Y si mi proyecto usa otras librerías de NPM (`zod`, `socket.io`, `dayjs`, `nodemailer`, etc.)?
+#### ➕ ¿Y si tu proyecto usa otras librerías de NPM (`zod`, `socket.io`, `dayjs`, etc.)?
 
-¡CajitaPaaS las detecta e instala con tu autorización!
 
-1. Al subir tu archivo `.zip`, el servidor analiza automáticamente tu `package.json`.
-2. Si detecta dependencias que aún no están en el teléfono, te muestra una ventana en el Panel Web solicitando tu **autorización previa**.
-3. Al presionar **"✅ Autorizar e Instalar"**, CajitaPaaS descarga e instala los paquetes directamente desde `registry.npmjs.org` dentro de un **Almacén Compartido (`cps_shared_node_modules`)** estilo `pnpm` para no duplicar espacio entre proyectos, y reinicia tu API automáticamente.
+1. Al subir tu `.zip`, el servidor inspecciona `package.json` y detecta qué dependencias faltan respecto a los módulos integrados y al **Almacén Compartido (`cps_shared_node_modules`)**.
+2. En el modal **📦 Dependencias**, puedes tocar **"✅ Autorizar e Instalar"** o **instalar paquetes adicionales por nombre** uno a uno directamente desde `registry.npmjs.org`.
+3. Al finalizar, tu aplicación se reinicia automáticamente con los nuevos módulos disponibles.
 
 ---
 
-### 3. Desplegar un Proyecto .NET / ASP.NET Core (MVC, Razor, Web API)
 
-CajitaPaaS incluye el runtime oficial **.NET 10 + ASP.NET Core 10 (ARM64 Alpine)** (compatible con `.NET 6`, `.NET 7`, `.NET 8`, `.NET 9` y `.NET 10` mediante _roll-forward_).
+### 3. Desplegar un Proyecto .NET / ASP.NET Core (6, 7, 8, 9 o 10)
 
-1. En tu PC, dentro de la carpeta del proyecto (donde está tu archivo `.csproj`), ejecuta:
+CajitaPaaS integra el runtime oficial **ASP.NET Core 10.0 (`linux-musl-arm64`)** junto con librerías nativas de Alpine (`icu-libs`, `icu-data-full`, `openssl`, `zlib`, `krb5-libs`, `libstdc++`, `libgcc`). Gracias a `DOTNET_ROLL_FORWARD=Major`, ejecuta aplicaciones compiladas para **.NET 6, 7, 8, 9 y 10**.
+
+1. En tu PC, dentro de la carpeta del `.csproj`, publica en modo _framework-dependent_:
    ```bash
    dotnet publish -c Release -o ./publish
    ```
-2. Comprime el contenido de la carpeta `./publish` (debe contener `TuApp.dll`, `TuApp.runtimeconfig.json`, `appsettings.json` y `wwwroot/` si corresponde) en un archivo `.zip`.
-3. En el Panel Web de CajitaPaaS, selecciona:
-   - **Sistema Completo (Fullstack)** (si incluye vistas Razor/MVC o `wwwroot/`) con ruta `/`.
-   - O **Backend / API** (si es una Web API REST) con ruta `/api/*`.
-4. **Conexión automática a MariaDB**: CajitaPaaS inyecta automáticamente `ConnectionStrings__DefaultConnection` además de `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` y `DB_NAME` (si usas `Pomelo.EntityFrameworkCore.MySql` o `MySqlConnector`, funcionará directo).
+1. Comprime el contenido de `./publish` (`TuApp.dll`, `TuApp.runtimeconfig.json`, `TuApp.deps.json`, `appsettings.json` y `wwwroot/` si aplica) en un `.zip`.
+1. En el Panel Web, elige:
+   - **🚀 Sistema Completo (Fullstack)** en ruta `/` (para Razor Pages, MVC o Web API + `wwwroot/`).
+   - **⚙️ Backend / API** en ruta `/api/*` (para Web APIs REST).
+1. **Variables inyectadas automáticamente en .NET**:
+   - `ASPNETCORE_URLS` / `URLS`: apuntando al puerto interno de la instancia (`http://127.0.0.1:<puerto_interno>`).
+   - `ASPNETCORE_ENVIRONMENT`: `Production` (sobrescribible vía configuración).
+   - `DOTNET_ROLL_FORWARD=Major`, `DOTNET_EnableWriteXorExecute=0`, `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` y `DOTNET_GCServer=0` (ajustados para seguridad W^X y baja memoria en Android).
+   - `DOTNET_GCHeapHardLimit` y `DOTNET_PROCESSOR_COUNT`: controlados desde el gestor de recursos / Modo Experto.
+   - `ConnectionStrings__DefaultConnection`: `"Server=127.0.0.1;Port=3306;Database=<tu_bd>;Uid=cajita_admin;Pwd=<clave>;"` (listo para **Pomelo.EntityFrameworkCore.MySql** o **MySqlConnector**), además de `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` y `DB_NAME`.
 
 ---
 
-### 🛠️ Herramientas en Caliente desde el Panel Web (Sin Resubir el `.ZIP`)
+## 🎛️ Panel de Control Web: Pestañas y Herramientas en Caliente
 
-Cada aplicación Backend encendida cuenta con controles instantáneos en su tarjeta:
+El panel administrativo está dividido en **4 pestañas principales** y **modales interactivos** sin necesidad de recompilar ni resubir el `.zip` ante cambios de configuración:
 
-- **📜 Consola en Vivo**: Abre una terminal en tiempo real que muestra las salidas `console.log()` / stdout, errores, estado del proceso (Node.js o .NET 10), límite de memoria RAM y contador de reinicios. Permite limpiar, copiar al portapapeles o reiniciar la app con 1 clic.
-- **⚙️ Variables `.env` / `appsettings.json` (Editor Visual)**: Lee y muestra las variables del archivo `.env` (Node.js) o de `appsettings.json` con soporte para comentarios JSONC (.NET / ASP.NET Core). Puedes editar claves individuales o alternar al modo texto crudo; al guardar, el backend se reinicia en caliente con los nuevos valores.
-- **📊 Recursos por App y Pantalla de Monitor (`4. Recursos (CPU / RAM / Disco)`)**:
-  - **Telemetría en Tiempo Real (Host + MariaDB + Cada App)**: Consulta cada 2 segundos la RAM consumida vs. libre del teléfono Android, uso de almacenamiento interno, métricas de MariaDB (`mariadbd` RSS, CPU %, hilos y tamaño de datos) y el consumo real (`/proc/<pid>`) de cada aplicación (RAM RSS usada, pico, libre dentro de su cuota asignada, % de CPU, hilos activos, uptime y espacio en disco).
-  - **Gestor de Cuotas y Límites (`📊 Recursos` en cada App)**: Permite agregar o quitar recursos por aplicación mediante slider / botones rápidos (`-64 MB` / `+64 MB`), limitar núcleos de CPU (`.NET DOTNET_PROCESSOR_COUNT`), ajustar prioridad de CPU en Linux (`nice`), configurar hilos trabajadores (`UV_THREADPOOL_SIZE`), definir cuotas informativas de disco y **Pausar / Reanudar** temporalmente una aplicación para liberar RAM y CPU al instante.
-- **📦 Dependencias**: Inspecciona qué librerías de tu `package.json` están preinstaladas de fábrica, cuáles están en el almacén compartido y permite instalar paquetes adicionales de NPM bajo demanda.
-- **🗄️ Cambiar BD**: Cambia a qué base de datos MySQL/MariaDB apunta tu aplicación en caliente, sincronizando automáticamente el cambio con su configuración de conexión.
-- **🧠 Modo Experto (Avanzado)**: Un interruptor opcional al pie de tus aplicaciones que permite configurar el **límite de memoria RAM por defecto y por cada App (`--max-old-space-size` / `DOTNET_GCHeapHardLimit`, desde 128 MB hasta 1024 MB; ampliable de 64 MB a 4096 MB desde el modal de 📊 Recursos)**, el **Auto-Reinicio Inteligente (Watchdog estilo PM2)** con retroceso exponencial y el tamaño del **Buffer Pool de MariaDB InnoDB**.
+### 1️⃣ Pestaña **🚀 1. Subir o Actualizar mis Apps**
+
+Cada aplicación activa en **🟢 Tus Apps Encendidas** cuenta con controles directos:
+
+- **🌐 Abrir Web / 🔌 Abrir API**: abre la URL principal del servicio según su rol.
+- **📜 Consola en Vivo**: terminal en tiempo real (Node.js, .NET 10, mensajes `[CPS-Watchdog]` y `[CPS-Seccomp]`) con barra de estado, contador de reinicios, **🔄 Reiniciar App**, **🧹 Limpiar** y **📋 Copiar** (con copia al portapapeles compatible tanto en HTTPS como en HTTP/WebView).
+- **⚙️ Variables `.env` / `appsettings.json`**:
+  - Detecta automáticamente si el proyecto usa `.env` (Node.js) o **`appsettings.json` / `appsettings.Production.json` (.NET)**, **soportando formato JSONC** (comentarios `//`, `/* ... */` y comas finales generadas por Visual Studio).
+  - Ofrece **Vista Clave = Valor** (con botón **⚡ Cargar Datos de MariaDB Local** y alta de nuevas claves) o **Modo Texto Crudo** (`.env` o JSON). Al guardar, valida sintaxis y reinicia el servicio al instante.
+- **📦 Dependencias**: auditoría e instalación bajo demanda de librerías NPM (con insignia de aviso si faltan paquetes tras subir un ZIP).
+- **🗄️ Cambiar BD**: cambia en caliente la base de datos de MariaDB a la que se conecta la app y actualiza automáticamente su configuración.
+- **📊 Recursos**: abre el modal de consumo y límites individuales de la app (disponible para frontend, backend y fullstack).
+- **✏️ Actualizar**: precarga nombre, rol, ruta y base de datos en el formulario superior para desplegar una nueva versión Blue/Green (conservando sus límites de CPU/RAM/Disco previos).
+- **🛑 Apagar**: detiene y elimina el proceso de forma limpia.
+- **🧠 Modo Experto (Avanzado)**: interruptor opcional al pie de la pestaña para configurar de golpe la **RAM por defecto y por app (`128 MB–1024 MB`)**, el **Buffer Pool de MariaDB InnoDB (`16–128 MB`)**, el **Watchdog de auto-reinicio estilo PM2 (`3/5/10` intentos con retroceso exponencial)** y ver cuántos paquetes hay en el almacén compartido.
 
 ---
 
-### 📝 Ejemplo mínimo de Backend API (`server.js`)
+### 2️⃣ Pestaña **🗄️ 2. Mis Bases de Datos y Modo PC**
 
-CajitaPaaS inyecta automáticamente variables de entorno en el proceso de tu API. Puedes usarlas directamente con `process.env`:
+- **💻 Puente DBeaver / MySQL Workbench (Modo PC)**:
+  - Por defecto protege el puerto externo y permite activarlo temporalmente con dos reglas de seguridad configurables:
+    - **Duración**: _Mientras esta pestaña web esté abierta_ (cierre automático por heartbeat) o _TTL automático_ de **15 min**, **30 min** o **1 hora**.
+    - **Control de acceso IP**: permitir _cualquier PC de tu red Wi-Fi_ o restringir _únicamente a la IP de tu PC actual_.
+  - Expone los puertos TCP **`3306`** (y **`13306`** alternativo) haciendo puente binario transparente hacia el demonio real `mariadbd` (`127.0.0.1:13307`), mostrando contador de **conexiones abiertas en vivo**.
+- **➕ Crear Nueva Base de Datos** y **📂 Tus Bases Guardadas**: crea bases y usuarios dedicados desde la web, inspecciona tablas creadas y ejecuta acciones rápidas.
+- **📥 Descargar Backup (`.SQL`)** y **📤 Importar Archivo (`.SQL`)**: exporta dumps completos (`CREATE TABLE` + `INSERT INTO`) o restaura archivos `.sql` desde cualquier navegador.
+- **🔍 Consultor SQL Rápido**: editor para ejecutar consultas SQL directamente desde la pestaña y visualizar los resultados en tabla HTML.
+
+#### Credenciales de Conexión MariaDB (Modo PC / Apps)
+
+| Parámetro                 | Valor por Defecto / Conexión                                  |
+| :------------------------ | :------------------------------------------------------------ |
+| **Host / Servidor**       | IP Wi-Fi de tu celular (ej: `192.168.1.145`) o `127.0.0.1`    |
+| **Puerto**                | `3306` _(o `13306`)_                                          |
+| **Usuario**               | `cajita_admin` _(o el usuario específico creado en el panel)_ |
+| **Contraseña**            | `cajitapaas2026`                                              |
+| **Base de Datos inicial** | `cajitapaas` _(o la asignada por `.env` / panel)_             |
+
+#### Tres formas de asignar la base de datos a tu Backend:
+
+1. En el campo **Base de Datos asociada** al subir el `.zip`.
+2. Definiendo `DB_NAME=...` en `.env` o `ConnectionStrings:DefaultConnection` en `appsettings.json`.
+3. En caliente desde la tarjeta de la app con el botón **🗄️ Cambiar BD**.
+
+#### Ejemplo mínimo de Backend API Node.js (`server.js`):
 
 ```javascript
-// server.js
 const express = require("express");
 const mariadb = require("mariadb");
 const cors = require("cors");
@@ -166,7 +216,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Variables automáticas inyectadas por CajitaPaaS:
+// Variables inyectadas automáticamente por CajitaPaaS:
 const pool = mariadb.createPool({
   host: process.env.DB_HOST || "127.0.0.1",
   port: Number(process.env.DB_PORT) || 3306,
@@ -176,7 +226,6 @@ const pool = mariadb.createPool({
   connectionLimit: 5,
 });
 
-// Endpoint de prueba de salud
 app.get("/api/status", (req, res) => {
   res.json({
     status: "online",
@@ -186,7 +235,6 @@ app.get("/api/status", (req, res) => {
   });
 });
 
-// Endpoint que consulta la base de datos
 app.get("/api/tareas", async (req, res) => {
   let conn;
   try {
@@ -202,7 +250,6 @@ app.get("/api/tareas", async (req, res) => {
   }
 });
 
-// Puerto asignado dinámicamente por CajitaPaaS (ej: 3001, 3003, etc.)
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Backend API escuchando en el puerto ${PORT}`);
@@ -211,60 +258,56 @@ app.listen(PORT, "0.0.0.0", () => {
 
 ---
 
-## 🗄️ Bases de Datos Dinámicas y Gestión con DBeaver
+### 3️⃣ Pestaña **🌐 3. Red, Túnel y Supervivencia Wi-Fi**
 
-CajitaPaaS no te limita a una sola base de datos rígida. Soporta múltiples bases de datos relacionales independientes para cada una de tus aplicaciones.
+#### 🌐 Túnel Cloudflare (`cloudflared` nativo)
 
-### ¿Cómo asignar la base de datos de tu API?
+Permite sortear CGNAT de redes móviles o Wi-Fi sin abrir puertos del router:
 
-Tienes **tres formas fáciles** de elegir a qué base de datos se conectará tu backend:
 
-1. **Al Desplegar en el Panel Web**: En el formulario de subida del backend, completa el campo **"Base de Datos MySQL (Opcional)"** (ej. `app_pruebas` o `tienda_db`). CPS creará la base si no existe y configurará la variable `DB_NAME`.
-2. **Mediante archivo `.env` en tu ZIP**: Si incluyes un `.env` en tu archivo comprimido con la línea:
-   ```env
-   DB_NAME=app_pruebas
-   ```
-   CajitaPaaS respetará tu configuración y conectará tu API a esa base.
-3. **En caliente sin reinstalar ("🗄️ Cambiar BD")**: En la tarjeta de tu app encendida en el panel web, haz clic en el botón **"🗄️ Cambiar BD"**, escribe el nombre de la nueva base de datos y presiona Guardar. Tu API se reconectará al instante sin necesidad de volver a subir el archivo ZIP.
+- **Interruptor Túnel Público / Solo Red Local**: apaga la exposición pública en 1 clic si prefieres trabajar solo dentro de tu LAN.
+- **⚡ Opción 1 — Túnel Rápido Gratis (`*.trycloudflare.com`)**: genera automáticamente una URL HTTPS pública al iniciar (con botón para regenerar un nuevo enlace en 1 clic).
+- **🔒 Opción 2 — Dominio Fijo con Cloudflare Zero Trust**:
+  1. Delega los DNS de tu dominio propio a **Cloudflare** y crea un túnel en _Networks → Tunnels_.
+  2. Configura el **Public Hostname** apuntando a `HTTP://127.0.0.1:8080` _(puedes copiarlo directo con el botón 📋 Copiar del panel)_.
+  3. Pega tu dominio y Token (`eyJhIjoi...`), selecciona el protocolo (**`HTTP/2` recomendado en Android/móviles** o **`QUIC`**) y guarda.
+- **🩺 Diagnóstico y Logs de Cloudflared en Vivo**: muestra el estado real de conexión (`Registered tunnel connection`), errores detallados si los hubiera y botón **📋 Copiar Logs**.
 
----
 
-### 💻 Conexión desde tu PC con DBeaver o MySQL Workbench
+#### 📡 Supervivencia de Red Wi-Fi (Failover a Hotspot / Failback Root)
 
-Puedes administrar tus bases de datos, crear tablas, importar dumps `.sql` o revisar datos en tiempo real conectando tu cliente SQL favorito desde tu computadora:
 
-1. En el Panel Web de CPS, ve a la pestaña **🗄️ Base de Datos**.
-2. Presiona **Activar Puente DBeaver**.
-3. En tu PC (en la misma red Wi-Fi), abre **DBeaver** o **MySQL Workbench** y crea una nueva conexión tipo **MySQL** o **MariaDB** con los siguientes datos:
+Pensado para teléfonos que funcionan como mini-servidores 24/7 en comercios u hogares:
 
-| Parámetro                 | Valor de Conexión                                             |
-| :------------------------ | :------------------------------------------------------------ |
-| **Host / Servidor**       | La IP Wi-Fi de tu celular (ej: `192.168.1.145`) o `127.0.0.1` |
-| **Puerto**                | `3306` (o `13306`)                                            |
-| **Usuario**               | `cajita_admin`                                                |
-| **Contraseña**            | `cajitapaas2026`                                              |
-| **Base de Datos inicial** | `cajitapaas`                                                  |
 
-> [!TIP]
-> Desde DBeaver puedes ejecutar sentencias SQL completas, como crear nuevas bases de datos para tus distintas aplicaciones:
->
-> ```sql
-> CREATE DATABASE IF NOT EXISTS app_pruebas;
-> USE app_pruebas;
-> CREATE TABLE tareas (
->   id INT AUTO_INCREMENT PRIMARY KEY,
->   titulo VARCHAR(255) NOT NULL,
->   completada BOOLEAN DEFAULT FALSE,
->   creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-> );
-> ```
+- **Detección reactiva**: escucha cambios de conectividad Wi-Fi (`ConnectivityManager.NetworkCallback`) con ventana anti-rebote de 5 segundos.
+- **Failover automático (vía Root)**: si el router se apaga o cae la señal Wi-Fi, el celular activa automáticamente su **Zona Wi-Fi (Hotspot)** de emergencia para mantener vivos los servicios en la red local.
+- **Failback en Modo Ciego (Single-Radio)**: en dispositivos de una sola antena Wi-Fi (como Moto G8) que no pueden emitir Hotspot y buscar router a la vez, puedes configurar intervalos de sondeo (**5, 10, 15 o 30 minutos**): apaga el Hotspot durante una ventana de **30 segundos**, comprueba si volvió el router y se reconecta automáticamente.
+- **Badge en tiempo real**: indica en vivo si la radio está en modo normal (`STA`), en modo emergencia (`SoftAP`) o sondeando router.
 
-### 📥 Exportar Backup (`.SQL`) e 📤 Importar Archivos `.SQL` desde el Navegador
 
-Sin necesidad de abrir DBeaver en una PC, en la pestaña **🗄️ 2. Mis Bases de Datos y Modo PC** del Panel Web dispones de:
+### 4️⃣ Pestaña **📊 4. Recursos (CPU / RAM / Disco) y Modal por App**
 
-- **📥 Descargar Backup (.SQL)**: Genera un archivo `<base>_backup.sql` completo con todas las estructuras `CREATE TABLE` y los registros `INSERT INTO` de cualquier base de datos con un solo clic.
-- **📤 Importar Archivo (.SQL)**: Sube un archivo `.sql` desde tu celular o computadora para crear tablas y poblar datos automáticamente en la base de datos que elijas.
+
+Tanto desde esta pestaña (actualizada en vivo cada 2 segundos) como desde el botón **📊 Recursos** de cualquier app, puedes inspeccionar y modificar el uso de hardware en tiempo real:
+
+#### Telemetría en Vivo (Consumo Real vs. Libre)
+
+
+| Ámbito              | Métricas Medibles en Tiempo Real                                                                                                                                       |
+| :------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **📱 Celular Host** | RAM total, RAM usada, RAM libre (`ActivityManager`), alerta `lowMemory`, RAM asignada en cuotas, disponible para asignar, CPU cores, almacenamiento (`StatFs`) y CPS.  |
+| **🗄️ MariaDB**      | Estado del demonio `mariadbd`, PID, RAM RSS y pico (`VmHWM`), Buffer InnoDB, % CPU, hilos, espacio real de datos en disco y conexiones activas.                        |
+| **📦 Cada App**     | Estado/uptime, PID, **RAM consumida vs. RAM libre dentro de su cuota**, pico histórico, **% de CPU e hilos (`/proc/<pid>`)** y espacio en disco (sin contar symlinks). |
+
+#### Controles para Agregar o Quitar Recursos por App (`#modalAppResources`)
+
+- **🧠 RAM Máxima (`maxRamMb`)**: slider y botones rápidos **`-64 MB` / `+64 MB`** (`64 MB` a `2048 MB`; aplicado a `--max-old-space-size` en Node.js y `DOTNET_GCHeapHardLimit` en .NET 10).
+- **⚡ Límite de Núcleos CPU (`cpuCoresLimit`)**: limita `DOTNET_PROCESSOR_COUNT` desde `1` núcleo hasta todos los núcleos disponibles (`Auto`).
+- **🔋 Prioridad CPU Linux (`cpuPriorityNice`)**: ajusta la prioridad del proceso mediante `/system/bin/nice -n <0..15>` (`Normal 0`, `Moderada 5`, `Baja 10`, `Mínima 15`).
+- **🧵 Hilos Worker I/O (`workerThreads`)**: ajusta `UV_THREADPOOL_SIZE` en Node.js (`2`, `4`, `8` o `16` hilos).
+- **💾 Cuota Máxima de Disco (`maxDiskMb`)**: cuota de referencia (`Sin tope fijo`, `100 MB`, `250 MB`, `500 MB`, `1024 MB`, `2048 MB`) para visualizar espacio libre en cuota.
+- **⏸️ Pausar / ▶️ Reanudar Proceso**: detiene temporalmente una aplicación sin borrarla para liberar toda su RAM y CPU al instante, y permite reanudarla cuando quieras.
 
 ---
 
@@ -272,110 +315,98 @@ Sin necesidad de abrir DBeaver en una PC, en la pestaña **🗄️ 2. Mis Bases 
 
 Cuando tus aplicaciones están encendidas, **CPS** organiza los puertos en tu red local Wi-Fi y en el Túnel Público de Cloudflare:
 
-| Servicio / Rol               | Puerto en Red Local (Wi-Fi)                                | Ruta en Túnel Público (`https://*.trycloudflare.com`) | Descripción                                                                                             |
-| :--------------------------- | :--------------------------------------------------------- | :---------------------------------------------------- | :------------------------------------------------------------------------------------------------------ |
-| **🎨 Frontend Principal**    | **`:8080`** _(y `:80` en celulares con Root)_              | `/` _(Raíz del enlace)_                               | Sirve tu interfaz web o SPA compilada.                                                                  |
-| **⚙️ Backend / API**         | **`:3001`**, **`:3003`**, etc. _(y proxy en `:8080/api/`)_ | `/api/*`                                              | Cada backend tiene su puerto dedicado en la LAN y además un proxy unificado bajo `/api/` en el `:8080`. |
-| **🛠️ Panel de Control CPS**  | **`:4000`**                                                | `/_control/`                                          | Panel administrativo para desplegar, monitorear y gestionar el sistema.                                 |
-| **🗄️ Base de Datos MariaDB** | **`:3306`** _(y `:13306`)_                                 | _Solo Red Local (LAN)_                                | Acceso directo de administración SQL para DBeaver o scripts locales.                                    |
-
----
+| Servicio / Rol                 | Puerto en Red Local (Wi-Fi)                                  | Ruta en Túnel Público (`https://...`)                 | Descripción                                                                                             |
+| :----------------------------- | :----------------------------------------------------------  | :------------------------------------                 | :-----------------------------------------------------------------------------------------------        |
+| **🎨 Frontend / Fullstack**    | **`:8080`** _(y **`:80`** automático en Android con Root)_   | `/` _(Raíz del enlace)_                               | Sirve tu interfaz web, SPA compilada o sistema Fullstack.                                               |
+| **⚙️ Backend / API**           | **`:3001`**, **`:3003`**, etc. _(y proxy en `:8080/api/`)_   | `/api/*` _(o ruta configurada)_                       | Cada backend escucha en un puerto dedicado en la LAN y queda unificado bajo `/api/` en `:8080`.         |
+| **🛠️ Panel de Control CPS**    | **`:4000`**                                                  | `/_control/`                                          | Panel administrativo protegido por contraseña maestra y token de sesión.                                |
+| **🗄️ Base de Datos MariaDB**   | **`:3306`** y **`:13306`** _(puente hacia `:13307` interno)_ | _Solo Red Local (LAN)_                                | Acceso directo SQL para DBeaver/MySQL Workbench (cuando Modo PC está activo) y backends locales.        |
 
 ### 🔗 ¿Cómo conectar tu Frontend con tu Backend sin problemas de CORS?
 
-Si despliegas un Frontend y una API por separado, puedes comunicarlos fácilmente con cualquiera de estas opciones:
-
-#### Opción 1: Rutas relativas `/api/...` (Recomendada ⭐)
-
-El Gateway interno de CajitaPaaS en el puerto `:8080` (y el túnel HTTPS de Cloudflare) unifica ambos servicios bajo el mismo origen:
-
-```javascript
-// Funciona idéntico en tu Wi-Fi local y a través de Internet
-const res = await fetch("/api/tareas");
-const tareas = await res.json();
-```
-
-#### Opción 2: Puente Automático de `localhost` (Sin modificar código)
-
-Si tu Frontend ya fue compilado apuntando a `http://localhost:3001` o `http://127.0.0.1:3000`, CajitaPaaS inyecta un interceptor inteligente al servir el `index.html` que redirige dinámicamente esas peticiones a la IP real del celular en tu LAN o a la ruta segura `/api/` por HTTPS cuando se accede desde Internet.
-
-#### Opción 3: Variables inyectadas en el navegador
-
-CPS expone variables globales en el cliente:
-
-- `window.CPS_API_URL`: Apunta a la dirección directa de tu backend.
-- `window.CPS_GATEWAY_API_URL`: Apunta al proxy unificado `/api`.
-
----
-
-## 🌐 Túnel Cloudflare: Link Rápido Gratis o Dominio Fijo Propio
-
-CajitaPaaS incluye `cloudflared` nativo para publicar tus proyectos en Internet por HTTPS sin abrir puertos en el router y sorteando bloqueos CGNAT. En la pestaña **🌐 3. Red, Túnel y Supervivencia Wi-Fi** tienes control total:
-
-- **Interruptor Túnel Público / Solo Red Local**: Apaga la exposición a Internet en 1 clic si prefieres trabajar únicamente dentro de tu red Wi-Fi privada.
-- **Opción 1 — Túnel Rápido Gratis (`*.trycloudflare.com`)**: No requiere cuenta ni configuración; al iniciar la app genera una URL HTTPS temporal automáticamente.
-- **Opción 2 — Dominio Fijo Propio con Token de Cloudflare Zero Trust**:
-  1. Delega los DNS (Nameservers) de tu dominio propio (ej. `midominio.com`) a una cuenta gratuita de **Cloudflare**.
-  2. En **Cloudflare Zero Trust** (`Networks → Tunnels`), crea un túnel tipo _Cloudflared_, copia el **Token** (`eyJhIjoi...`) y en **Public Hostname** apunta tu dominio o subdominio (ej. `app.midominio.com`) hacia `HTTP://127.0.0.1:8080`.
-  3. Pega el dominio y el token en CajitaPaaS, elige el protocolo (`HTTP/2` recomendado en móviles o `QUIC`) y guarda. El panel verificará la conexión real con Cloudflare (`Registered tunnel connection`) y mostrará logs y posibles errores en vivo.
+1. **Rutas relativas `/api/...` (Recomendada ⭐)**: el Gateway interno (`:8080`) y Cloudflare Tunnel enrutan ambos servicios bajo el mismo origen, evitando errores de CORS y Mixed Content (`fetch("/api/tareas")`).
+2. **Puente automático de `localhost` (Sin modificar código)**: al servir `index.html`, CajitaPaaS inyecta un interceptor inteligente que redirige llamadas compiladas contra `http://localhost:3001` o `127.0.0.1` hacia la IP real de la LAN o hacia `/api/` por HTTPS cuando se entra desde Internet.
+3. **Variables globales en navegador**: expone `window.CPS_API_URL` (dirección directa del backend) y `window.CPS_GATEWAY_API_URL` (proxy unificado `/api`).
 
 ---
 
 ## 🛠️ Arquitectura Técnica y Funcionamiento Interno
 
-Para ingenieros, desarrolladores y curiosos del funcionamiento a bajo nivel:
+Para ingenieros y desarrolladores que quieran entender o extender el funcionamiento a bajo nivel:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   DISPOSITIVO ANDROID (ARM64)                          │
-│                                                                        │
-│  ┌───────────────────────┐             ┌─────────────────────────────┐ │
-│  │   Cloudflare Tunnel   │             │   PaaSRuntimeService        │ │
-│  │  (libcloudflared.so)  │             │   - Foreground Service      │ │
-│  └──────────┬────────────┘             │   - CPU Partial WakeLock    │ │
-│             │ HTTPS Público            │   - WiFi Low-Latency Lock   │ │
-│             ▼                          └──────────────┬──────────────┘ │
-│  ┌────────────────────────────────────────────────────▼──────────────┐ │
-│  │        EmbeddedControlPlaneServer (Kotlin Ktor/Netty)             │ │
-│  │   - Panel Web (:4000)                                             │ │
-│  │   - Gateway Reverse Proxy (:8080)                                 │ │
-│  │   - Blue/Green Deployment Router & Health Checker                 │ │
-│  └──────────┬─────────────────────────────────────────┬──────────────┘ │
-│             │ Proxy /api/*                            │ Proxy /        │
-│             ▼                                         ▼                │
-│  ┌───────────────────────┐             ┌─────────────────────────────┐ │
-│  │  Node.js v20 ARM64    │             │   Static Assets Storage     │ │
-│  │  (libnode.so Alpine)  │             │   (HTML/CSS/JS Frontend)    │ │
-│  │  - Preloader CJS      │             └─────────────────────────────┘ │
-│  │  - Global node_modules│                                             │
-│  └──────────┬────────────┘                                             │
-│             │ Conexión TCP :3306                                       │
-│             ▼                                                          │
-│  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │   EmbeddedDatabaseEngine: MariaDB 10.11 ARM64 (InnoDB Nativo)      │ │
-│  │   - Ejecución ELF nativa vía libc musl (libalpine_musl.so)        │ │
-│  │   - Compatible con SELinux W^X en Android 10, 11, 12, 13, 14, 15  │ │
-│  │   - Multi-Database (cajitapaas, app_pruebas, etc.)                │ │
-│  │   - Listener en 0.0.0.0:3306 y 0.0.0.0:13306                     │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                         DISPOSITIVO ANDROID (ARM64)                           │
+│                                                                               │
+│  ┌─────────────────────────────┐      ┌────────────────────────────────────┐  │
+│  │      Cloudflare Tunnel      │      │        PaaSRuntimeService          │  │
+│  │     (libcloudflared.so)     │      │  - Foreground Service (specialUse) │  │
+│  │  - DNS 1.1.1.1 parcheado    │      │  - WakeLock CPU + WiFi LowLatency  │  │
+│  │  - Bundle CA Android        │      │  - Root iptables :80 -> :8080      │  │
+│  └──────────────┬──────────────┘      │  - NetworkFailoverManager (Wi-Fi)  │  │
+│                 │ HTTPS Público       └─────────────────┬──────────────────┘  │
+│                 ▼                                       ▼                     │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │         EmbeddedControlPlaneServer (Kotlin HTTP Nativo Multi-Hilo)      │  │
+│  │   - Panel Web (:4000) · Auth & Env/JSONC · Watchdog & Dependencias NPM  │  │
+│  │   - Gateway Reverse Proxy (:8080) · Enrutamiento SPA & Blue/Green       │  │
+│  │   - Telemetría (/proc/<pid>, ActivityManager, StatFs) & Límites         │  │
+│  └──────┬─────────────────────────────┬──────────────────────────┬─────────┘  │
+│         │ Proxy /api/*                │ Proxy / o /api/*         │ Estáticos  │
+│         ▼                             ▼                          ▼            │
+│  ┌─────────────────────┐  ┌─────────────────────────────┐  ┌───────────────┐  │
+│  │ Node.js v20 ARM64   │  │ .NET 10 / ASP.NET Core 10   │  │ Static Assets │  │
+│  │ (libnode.so Alpine) │  │ (libcps_dotnet_host.so)     │  │ Storage       │  │
+│  │ - nice / UV_THREADS │  │ - dlopen(libhostfxr.so)     │  │ (HTML/JS/SPA) │  │
+│  │ - --max-old-space   │  │ - SIGSYS -> -ENOSYS handler │  └───────────────┘  │
+│  │ - cps_node_preload  │  │ - DOTNET_GCHeapHardLimit    │                     │
+│  └──────────┬──────────┘  └──────────────┬──────────────┘                     │
+│             │ TCP :3306                  │ TCP :3306                          │
+│             └──────────────┬─────────────┘                                    │
+│                            ▼                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │     EmbeddedDatabaseEngine: MariaDB 10.11 ARM64 (InnoDB Nativo)         │  │
+│  │   - Ejecución ELF nativa vía libc musl (libalpine_musl.so)              │  │
+│  │   - Demonio mariadbd en 127.0.0.1:13307 + Puente TCP :3306 / :13306     │  │
+│  │   - Compatible con SELinux W^X (Android 9 - 15) · Multi-Database        │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Ejecución ELF Nativa sin Root ni PRoot Pesado**: Tanto MariaDB como Node.js se ejecutan directamente en el espacio de bibliotecas nativas de la aplicación (`extractNativeLibs="true"`), utilizando una capa de enlace Alpine musl (`libalpine_musl.so`) para satisfacer las llamadas al sistema Linux en Android respetando las restricciones de memoria W^X (Write XOR Execute).
-- **Extracción de Assets de Alta Velocidad**: La inicialización del motor utiliza `ZipFile` nativo de C++ para descomprimir los componentes de MariaDB y las bibliotecas Node.js en segundos durante el primer arranque.
-- **Preloader Node (`cps_node_preload.cjs`)**: Intercepta la resolución de módulos de Node.js mediante parcheo de `Module._resolveFilename` y `Module.globalPaths`, permitiendo que cualquier aplicación invoque `require('express')` o `require('mariadb')` desde la librería central compartida de CajitaPaaS.
-- **Failover / Failback de Red (Supervivencia Wi-Fi)**: Monitorea el estado de la red mediante `ConnectivityManager.NetworkCallback`. En dispositivos con hardware de antena única (_single-radio_, ej: Moto G8), realiza ciclos de sondeo desactivando momentáneamente el Hotspot para verificar si el módem principal ha vuelto a encenderse.
+- **Ejecución ELF Nativa sin Root ni PRoot Pesado**: tanto MariaDB (`libmariadbd.so` / `libmariadb_cli.so`), Node.js (`libnode.so`) como el host nativo `.NET` (`libcps_dotnet_host.so`) residen en `jniLibs/arm64-v8a` con `extractNativeLibs="true"` para cumplir las políticas SELinux `W^X` en Android 10–15, enlazados contra musl de Alpine 3.20 (`libalpine_musl.so`) mediante mapas de librerías (`mariadb_libs_map.txt` y `dotnet_so_map.txt`).
+- **Host Nativo .NET 10 (`cps_dotnet_host.c` → `libcps_dotnet_host.so`)**: en Android musl no permite ejecutar un binario si `/proc/self/exe` no se llama literalmente `dotnet` (`cannot execute dotnet when renamed to libalpine_musl.so`). Para resolverlo limpiamente y respetar `W^X`, un launcher C PIE carga `libhostfxr.so` con `dlopen`, invoca directamente `hostfxr_main_startupinfo` e instala un manejador de señal `SIGSYS` (`SYS_SECCOMP`) que responde `-ENOSYS` en llamadas restringidas por seccomp-bpf (`membarrier`, `clone3`, `rseq`, etc.) para que CoreCLR active su ruta segura de respaldo.
+- **Parcheo de DNS y TLS en `cloudflared`**: el workflow de compilación parchea `libcloudflared.so` reemplazando el fallback DNS `127.0.0.1:53` por `1.1.1.1:0053`, y `PaaSRuntimeService` genera un bundle `cacerts.pem` a partir de los certificados raíz del sistema Android para validar TLS sin errores.
+- **Preloader Node (`cps_node_preload.cjs`)**: parchea `Module._resolveFilename` y `Module.globalPaths` para compartir módulos globales y las dependencias instaladas bajo `cps_shared_node_modules`.
+- **Pipeline de Compilación Automática (`.github/workflows/build-apk.yml`)**: compila en `ubuntu-24.04` usando contenedores `alpine:3.20` + QEMU ARM64 para construir los paquetes nativos, el launcher `libcps_dotnet_host.so`, el APK debug con Gradle 8.9 (AGP 8.5 / JDK 17) y publica automáticamente el APK en Artifacts y Releases.
 
 ---
 
 ## 📁 Estructura del Código Fuente
 
-- [`android/app/src/main/AndroidManifest.xml`](android/app/src/main/AndroidManifest.xml): Configuración de servicios en primer plano, permisos de red, WakeLocks y empaquetado nativo.
-- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt): Servidor multipuerto en Kotlin que maneja el Panel (`:4000`), el Gateway (`:8080`), la asignación de puertos dinámicos (`:3001+`), el proxy inverso y los endpoints de configuración de base de datos.
-- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedDatabaseEngine.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedDatabaseEngine.kt): Gestor del ciclo de vida del motor MariaDB 10.11 ARM64 nativo y del runtime Node.js v20.
-- [`android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt`](android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt): Servicio persistente de Android con bloqueos de suspensión (`WakeLock` y `WifiLock`) y orquestación del túnel Cloudflare.
-- [`android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt`](android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt): Gestor de supervivencia de red con detección de caída de Wi-Fi y switch automático a Hotspot.
-- [`control-plane/public/index.html`](control-plane/public/index.html) y [`control-plane/public/app.js`](control-plane/public/app.js): Interfaz de usuario interactiva del panel de control con soporte para despliegues Blue/Green, cambio de base de datos en caliente y monitoreo en tiempo real.
+
+### Aplicación Android Nativa (`android/`)
+
+- [`android/app/build.gradle.kts`](android/app/build.gradle.kts): configuración de SDK (`compileSdk 34`, `minSdk 28`, `targetSdk 34`), filtro `arm64-v8a` y `useLegacyPackaging` para librerías nativas.
+- [`android/app/src/main/AndroidManifest.xml`](android/app/src/main/AndroidManifest.xml): permisos de red, Wi-Fi, ubicación, WakeLock, `FOREGROUND_SERVICE_SPECIAL_USE`, `extractNativeLibs="true"` y tráfico cleartext local.
+- [`android/app/src/main/java/com/cajitapaas/ui/MainActivity.kt`](android/app/src/main/java/com/cajitapaas/ui/MainActivity.kt): pantalla principal con WebView del panel en `:4000`, selector de archivos `.ZIP`/`.SQL` y solicitud de exención de batería y notificaciones.
+- [`android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt`](android/app/src/main/java/com/cajitapaas/core/PaaSRuntimeService.kt): servicio persistente en primer plano con WakeLock/WifiLock, pulso keep-alive, ciclo de `cloudflared`, bundle TLS (`cacerts.pem`) y redirección Root de `:80 -> :8080`.
+- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedControlPlaneServer.kt): servidor HTTP Kotlin nativo multipuerto (`:4000` Control Plane, `:8080` Gateway, `:3001+` por app), proxy inverso, gestión de procesos Node.js/.NET 10, Watchdog, editor `.env`/`appsettings.json` (JSONC), instalador NPM, export/import `.SQL` y telemetría/control de recursos (`/proc/<pid>`, RAM, CPU, disco).
+- [`android/app/src/main/java/com/cajitapaas/core/EmbeddedDatabaseEngine.kt`](android/app/src/main/java/com/cajitapaas/core/EmbeddedDatabaseEngine.kt): ciclo de vida del motor MariaDB 10.11 Alpine ARM64, puente TCP `:3306`/`:13306`, extracción rápida de bundles (`.alpine_mariadb_*` / `.alpine_dotnet10_*`) y métricas de PID/tamaño de datos.
+- [`android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt`](android/app/src/main/java/com/cajitapaas/core/NetworkFailoverManager.kt): máquina de estados para Supervivencia Wi-Fi (Failover a Hotspot AP y Failback con sondeo en Modo Ciego para hardware single-radio).
+- [`android/app/src/main/java/com/cajitapaas/core/RootDetector.kt`](android/app/src/main/java/com/cajitapaas/core/RootDetector.kt) y [`RootShellUtils.kt`](android/app/src/main/java/com/cajitapaas/core/RootShellUtils.kt): detección de `su`/cgroups y utilidad segura para ejecutar comandos `su -c` con timeout y lectura concurrente de streams.
+
+### Panel de Control Web (`control-plane/`)
+
+- [`control-plane/public/index.html`](control-plane/public/index.html) y [`control-plane/public/app.js`](control-plane/public/app.js): interfaz completa (login/setup, 4 pestañas, consola en vivo, editor `.env`/`appsettings.json`, gestor NPM, DBeaver/SQL, Cloudflare Tunnel, Supervivencia Wi-Fi, Monitor de Recursos y modal por app).
+- [`control-plane/server.js`](control-plane/server.js) y [`control-plane/preview-server.js`](control-plane/preview-server.js): servidor Control Plane en Node.js (con `pm2`, `simple-git`, `express`, `mysql2`) y servidor local de vista previa UI en PC.
+
+### Scripts de Empaquetado Nativo y CI/CD (`scripts/` y `.github/`)
+
+- [`scripts/cps_dotnet_host.c`](scripts/cps_dotnet_host.c): host nativo C (`libcps_dotnet_host.so`) para arrancar CoreCLR/.NET 10 en Android sin errores de `/proc/self/exe` ni `SIGSYS`.
+- [`scripts/build_dotnet_alpine_arm64.sh`](scripts/build_dotnet_alpine_arm64.sh): script Alpine 3.20 ARM64 que descarga ASP.NET Core 10.0 (`linux-musl-arm64`), mapea librerías nativas y genera `dotnet_alpine_bundle.zip`.
+- [`scripts/build_mariadb_alpine_arm64.sh`](scripts/build_mariadb_alpine_arm64.sh): script Alpine 3.20 ARM64 que empaqueta `mariadbd`, `mariadb`, `node`, módulos preinstalados y datadir inicial de MariaDB.
+- [`scripts/install_on_phone_termux.sh`](scripts/install_on_phone_termux.sh), [`scripts/boot_nonroot_proot.sh`](scripts/boot_nonroot_proot.sh) y [`scripts/boot_root_native.sh`](scripts/boot_root_native.sh): scripts complementarios de entorno Termux, PRoot Debian y arranque nativo con cgroups/Docker en Root.
+- [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml): workflow de GitHub Actions que construye los runtimes ARM64, compila `libcps_dotnet_host.so` vía QEMU y genera/publica la APK automáticamente.
 
 ---
 
