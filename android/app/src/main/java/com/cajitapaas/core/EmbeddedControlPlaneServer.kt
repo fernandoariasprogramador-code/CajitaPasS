@@ -231,6 +231,11 @@ class EmbeddedControlPlaneServer(
         appWatchdogState[appName] = "starting"
         executor.execute {
             runCatching { startAppNodeProcessIfPresent(appName, appPort) }
+                .onFailure { err ->
+                    appWatchdogState[appName] = "error_start"
+                    appendAppLog(appName, "[CPS-Runtime] ❌ Error iniciando '$appName': ${err.javaClass.simpleName}: ${err.message}")
+                    Log.e(TAG, "Error iniciando '$appName'", err)
+                }
         }
         thread(name = "CPS-App-$appName-$appPort") {
             try {
@@ -559,7 +564,14 @@ class EmbeddedControlPlaneServer(
         appCpuSamples.remove(appName)
         val startTimestamp = System.currentTimeMillis()
         appStartTimes[appName] = startTimestamp
-        val proc = pb.start()
+        val proc = try {
+            pb.start()
+        } catch (e: Exception) {
+            appWatchdogState[appName] = "error_start"
+            appendAppLog(appName, "[CPS-Runtime] ❌ Error iniciando proceso Node.js: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "Error ejecutando pb.start() para Node '$appName'", e)
+            return
+        }
         appProcesses[appName] = proc
         appWatchdogState[appName] = "running"
         appendAppLog(appName, "[CPS-Runtime] 🚀 Iniciando '${entryScript.name}' (Puerto :$appPort -> Interno :$internalNodePort · RAM máx: ${appMaxRamMb}MB · BD: '$effectiveDb')")
@@ -689,6 +701,11 @@ class EmbeddedControlPlaneServer(
         val proc = appProcesses[appName]
         if (proc == null || !proc.isAlive) {
             runCatching { startAppNodeProcessIfPresent(appName, appPort) }
+                .onFailure { err ->
+                    appWatchdogState[appName] = "error_start"
+                    appendAppLog(appName, "[CPS-Runtime] ❌ Error iniciando '$appName': ${err.javaClass.simpleName}: ${err.message}")
+                    Log.e(TAG, "Error en ensureAppNodeServerReady('$appName')", err)
+                }
         }
 
         val maxWaitSteps = when {
@@ -923,7 +940,14 @@ class EmbeddedControlPlaneServer(
         appCpuSamples.remove(appName)
         val startTimestamp = System.currentTimeMillis()
         appStartTimes[appName] = startTimestamp
-        val proc = pb.start()
+        val proc = try {
+            pb.start()
+        } catch (e: Exception) {
+            appWatchdogState[appName] = "error_start"
+            appendAppLog(appName, "[CPS-DotNet] ❌ Error iniciando proceso .NET: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "Error ejecutando pb.start() para .NET '$appName'", e)
+            return
+        }
         appProcesses[appName] = proc
         appWatchdogState[appName] = "running"
         appendAppLog(appName, "[CPS-DotNet] 🚀 Iniciando '${dllFile.name}' (.NET 10 · Puerto :$appPort -> Interno :$internalPort · RAM máx: ${appMaxRamMb}MB · BD: '$effectiveDb')")
@@ -1175,15 +1199,19 @@ class EmbeddedControlPlaneServer(
             return
         }
 
-        val elfHostBin = File(context.applicationInfo.nativeLibraryDir, "libcps_elf_host.so")
-        if (!elfHostBin.exists()) {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val muslLinker = File(nativeLibDir, "libalpine_musl.so")
+        val elfHostBin = File(nativeLibDir, "libcps_elf_host.so")
+        if (!muslLinker.exists() || !elfHostBin.exists()) {
             appWatchdogState[appName] = "error_runtime"
-            appendAppLog(appName, "[CPS-Go] ❌ El cargador nativo ARM64 (libcps_elf_host.so) no está empaquetado en esta APK.")
-            Log.w(TAG, "Binario libcps_elf_host.so no disponible para iniciar '$appName'")
+            appendAppLog(appName, "[CPS-Go] ❌ El cargador nativo ARM64 (libcps_elf_host.so / libalpine_musl.so) no está empaquetado en esta APK.")
+            Log.w(TAG, "Binario libcps_elf_host.so o libalpine_musl.so no disponible para iniciar '$appName'")
             return
         }
 
+        runCatching { Os.chmod(muslLinker.absolutePath, 493) }
         runCatching { Os.chmod(elfHostBin.absolutePath, 493) }
+        val libSearchPath = dbEngine.getLibSearchPath()
         val workDir = binaryFile.parentFile ?: appRoot
 
         val projects = loadSavedProjects()
@@ -1192,7 +1220,14 @@ class EmbeddedControlPlaneServer(
         val cpuCoresLimit = (appConfig?.optInt("cpuCoresLimit", 0) ?: 0).coerceIn(0, Runtime.getRuntime().availableProcessors())
         val cpuPriorityNice = (appConfig?.optInt("cpuPriorityNice", 0) ?: 0).coerceIn(0, 19)
 
-        val baseArgs = listOf(elfHostBin.absolutePath)
+        val baseArgs = listOf(
+            muslLinker.absolutePath,
+            "--argv0",
+            elfHostBin.absolutePath,
+            "--library-path",
+            libSearchPath,
+            elfHostBin.absolutePath
+        )
         val args = if (cpuPriorityNice > 0 && File("/system/bin/nice").exists()) {
             listOf("/system/bin/nice", "-n", cpuPriorityNice.toString()) + baseArgs
         } else {
@@ -1281,7 +1316,14 @@ class EmbeddedControlPlaneServer(
         appCpuSamples.remove(appName)
         val startTimestamp = System.currentTimeMillis()
         appStartTimes[appName] = startTimestamp
-        val proc = pb.start()
+        val proc = try {
+            pb.start()
+        } catch (e: Exception) {
+            appWatchdogState[appName] = "error_start"
+            appendAppLog(appName, "[CPS-Go] ❌ Error iniciando proceso Go: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "Error ejecutando pb.start() para Go '$appName'", e)
+            return
+        }
         appProcesses[appName] = proc
         appWatchdogState[appName] = "running"
         appendAppLog(

@@ -150,6 +150,25 @@ static void patch_go_dns_in_region(uint8_t *buf, size_t len) {
   }
 }
 
+static int is_va_range_free(uintptr_t start, uintptr_t end) {
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f)
+    return 1;
+  char line[512];
+  int free_ok = 1;
+  while (fgets(line, sizeof(line), f)) {
+    unsigned long mstart = 0, mend = 0;
+    if (sscanf(line, "%lx-%lx", &mstart, &mend) == 2) {
+      if ((uintptr_t)mend > start && (uintptr_t)mstart < end) {
+        free_ok = 0;
+        break;
+      }
+    }
+  }
+  fclose(f);
+  return free_ok;
+}
+
 static void fill_random_bytes(uint8_t *out, size_t len) {
 #ifdef SYS_getrandom
   ssize_t r = syscall(SYS_getrandom, out, len, 0);
@@ -346,10 +365,30 @@ int main(int argc, char **argv) {
 
     uintptr_t alloc_start = (mstart < highest_mapped_end) ? highest_mapped_end : mstart;
     if (alloc_start < mend) {
-      int mflags = MAP_PRIVATE | MAP_ANONYMOUS |
-                   ((ehdr.e_type == ET_DYN) ? MAP_FIXED : MAP_FIXED_NOREPLACE);
-      void *mapped = mmap((void *)alloc_start, mend - alloc_start, PROT_READ | PROT_WRITE, mflags, -1, 0);
-      if (mapped == MAP_FAILED) {
+      size_t alloc_len = (size_t)(mend - alloc_start);
+      void *mapped = MAP_FAILED;
+      if (ehdr.e_type == ET_DYN) {
+        mapped = mmap((void *)alloc_start, alloc_len, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+      } else {
+        mapped = mmap((void *)alloc_start, alloc_len, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (mapped != (void *)alloc_start) {
+          if (mapped != MAP_FAILED) {
+            munmap(mapped, alloc_len);
+          }
+          if (!is_va_range_free(alloc_start, mend)) {
+            fprintf(stderr,
+                    "[CPS-GoHost] Rango virtual ocupado 0x%lx..0x%lx al mapear segmento ELF.\n",
+                    (unsigned long)alloc_start, (unsigned long)mend);
+            close(fd);
+            return 126;
+          }
+          mapped = mmap((void *)alloc_start, alloc_len, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        }
+      }
+      if (mapped == MAP_FAILED || mapped != (void *)alloc_start) {
         fprintf(stderr,
                 "[CPS-GoHost] Error mapeando segmento ELF 0x%lx..0x%lx (errno=%d: %s).\n",
                 (unsigned long)alloc_start, (unsigned long)mend, errno, strerror(errno));

@@ -83,7 +83,7 @@ jobs:
             'chmod 755 /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_dotnet_host.so /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_elf_host.so' \
             'printf "%s\n" "#include <stdio.h>" "#include <stdlib.h>" "int main(int argc, char **argv) { const char *s = getenv(\"CPS_SMOKE\"); printf(\"CPS_ELF_HOST_OK argc=%d env=%s arg=%s\\n\", argc, s ? s : \"\", argc > 1 ? argv[1] : \"\"); return 0; }" > /tmp/elf_smoke.c' \
             'gcc -O2 -static /tmp/elf_smoke.c -o /tmp/elf_smoke_bin' \
-            'SMOKE_OUT=$(CPS_SMOKE=go_arm64 CPS_ELF_APP_PATH=/tmp/elf_smoke_bin /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_elf_host.so --probe)' \
+            'SMOKE_OUT=$(CPS_SMOKE=go_arm64 CPS_ELF_APP_PATH=/tmp/elf_smoke_bin /lib/ld-musl-aarch64.so.1 --argv0 /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_elf_host.so --library-path /lib:/usr/lib /workspace/android/app/src/main/jniLibs/arm64-v8a/libcps_elf_host.so --probe)' \
             'echo "$SMOKE_OUT"' \
             'echo "$SMOKE_OUT" | grep -q "CPS_ELF_HOST_OK argc=2 env=go_arm64 arg=--probe"' > /tmp/build_arm64_hosts.sh
           chmod +x /tmp/build_arm64_hosts.sh
