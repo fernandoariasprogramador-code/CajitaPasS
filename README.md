@@ -39,6 +39,7 @@ Eso es **CPS (`CajitaPaaS`)**: una plataforma PaaS (Platform as a Service) nativ
 9. ⚡ **Multi-Runtime Nativo en ARM64 (Sin Root ni PRoot pesado)**:
    - **Node.js v20 (Alpine ARM64)**: ejecuta APIs Backend directamente con 18 módulos populares preinstalados (`express`, `mariadb`, `mysql2`, `cors`, `dotenv`, `bcryptjs`, etc.), almacén compartido de paquetes e instalador NPM bajo demanda.
    - **.NET 10.0 + ASP.NET Core 10 (Alpine ARM64)**: ejecuta Web APIs, aplicaciones MVC, Razor Pages y sistemas Fullstack en `.NET 6`, `.NET 7`, `.NET 8`, `.NET 9` y `.NET 10` mediante _roll-forward_ automático (`DOTNET_ROLL_FORWARD=Major`) y un launcher ELF nativo con soporte seccomp para Android.
+   - **Go Nativo ARM64 (`linux/arm64` `CGO_ENABLED=0`)**: ejecuta binarios estáticos de Go en Android 10–15 sin Root mediante cargador ELF en memoria (`libcps_elf_host.so` compatible con SELinux W^X), inyectando `PORT`/`APP_PORT`, `GOMEMLIMIT`, `GOMAXPROCS`, TLS CA bundle y DNS para Android.
    - **Frontends Estáticos y SPAs**: HTML/CSS/JS, React, Vue, Vite o Angular servidos con enrutamiento SPA y puente automático anti-CORS.
 10. 🔄 **Actualizar sin caídas (Blue/Green) y Multi-Servicio**: despliega por separado un **Frontend**, un **Backend / API** o un **Sistema Completo (Fullstack)** en puertos dedicados (`:3001`, `:3003`, `:3005`, ...) unificados bajo el Gateway HTTP (`:8080`, y `:80` automático en teléfonos con Root).
 11. 🗄️ **Base de Datos MariaDB 10.11 Nativa con InnoDB**: un motor relacional real (no SQLite recortado) con transacciones ACID, múltiples bases dinámicas, **Modo PC (Puente DBeaver/MySQL Workbench)** con control de tiempo e IP en `:3306` / `:13306`, **Exportación e Importación `.SQL`** y **Consultor SQL rápido en el navegador**.
@@ -153,6 +154,30 @@ CajitaPaaS integra el runtime oficial **ASP.NET Core 10.0 (`linux-musl-arm64`)**
    - `DOTNET_ROLL_FORWARD=Major`, `DOTNET_EnableWriteXorExecute=0`, `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` y `DOTNET_GCServer=0` (ajustados para seguridad W^X y baja memoria en Android).
    - `DOTNET_GCHeapHardLimit` y `DOTNET_PROCESSOR_COUNT`: controlados desde el gestor de recursos / Modo Experto.
    - `ConnectionStrings__DefaultConnection`: `"Server=127.0.0.1;Port=3306;Database=<tu_bd>;Uid=cajita_admin;Pwd=<clave>;"` (listo para **Pomelo.EntityFrameworkCore.MySql** o **MySqlConnector**), además de `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` y `DB_NAME`.
+
+---
+
+### 4. Desplegar un Proyecto Go (`linux/arm64` Estático)
+
+CajitaPaaS ejecuta directamente binarios **Go compilados de forma estática para `linux/arm64`** (`CGO_ENABLED=0`) sin Root ni emuladores, cargando sus segmentos ELF en memoria mediante `libcps_elf_host.so` (respetando SELinux W^X en Android 10–15).
+
+1. En tu PC, compila tu servicio Go para **ARM64 estático** (importante: **no** subas `.exe` de Windows ni binarios `linux/amd64`):
+   ```bash
+   # Linux / macOS
+   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags "purego,nodynamic" -trimpath -ldflags="-s -w" -o mi-servicio ./cmd/server
+   ```
+   ```powershell
+   # PowerShell (Windows)
+   $env:GOOS="linux"; $env:GOARCH="arm64"; $env:CGO_ENABLED="0"
+   go build -tags "purego,nodynamic" -trimpath -ldflags="-s -w" -o mi-servicio ./cmd/server
+   ```
+   > **Nota sobre `-tags "purego,nodynamic"`**: si tu proyecto usa librerías como `gen2brain/webp` / `ebitengine/purego`, agregar la etiqueta `nodynamic` evita que el binario requiera `/lib/ld-linux-aarch64.so.1`.
+2. Comprime el binario ARM64 (junto con tu `.env` o `.env.production` si usas uno) en un `.zip` y súbelo como **⚙️ Backend / API** o **🚀 Sistema Completo (Fullstack)** (también puedes separar múltiples prefijos de ruta con coma, ej. `/api/v1/imagenes/*,/media/*`).
+3. **Adaptaciones automáticas para Go en Android**:
+   - **Puertos**: inyecta `PORT`, `APP_PORT`, `SERVER_PORT` y `HTTP_PORT` apuntando al puerto interno del proxy (`<puerto_app + 10000>`).
+   - **Límites de RAM y CPU**: configura `GOMEMLIMIT=<maxRamMb>MiB`, `GOMAXPROCS` (si se limita núcleos desde **📊 Recursos**) y prioridad Linux `nice`.
+   - **Almacenamiento seguro**: si tu `.env`/`.env.production` apunta `STORAGE_LOCAL_PATH`, `DB_SQLITE_PATH`, `DATA_DIR` o `UPLOAD_DIR` a rutas de VPS Linux no escribibles en Android (como `/var/lib/...` u `/opt/...`), CPS las redirige automáticamente a la carpeta interna escribible `./data/` del proyecto.
+   - **TLS y DNS**: inyecta `SSL_CERT_FILE` con el bundle CA de Android y parchea en memoria el fallback DNS `127.0.0.1:53` hacia `1.1.1.1:0053` cuando no existe `/etc/resolv.conf`.
 
 ---
 
@@ -351,19 +376,18 @@ Para ingenieros y desarrolladores que quieran entender o extender el funcionamie
 │  │   - Panel Web (:4000) · Auth & Env/JSONC · Watchdog & Dependencias NPM  │  │
 │  │   - Gateway Reverse Proxy (:8080) · Enrutamiento SPA & Blue/Green       │  │
 │  │   - Telemetría (/proc/<pid>, ActivityManager, StatFs) & Límites         │  │
-│  └──────┬─────────────────────────────┬──────────────────────────┬─────────┘  │
-│         │ Proxy /api/*                │ Proxy / o /api/*         │ Estáticos  │
-│         ▼                             ▼                          ▼            │
-│  ┌─────────────────────┐  ┌─────────────────────────────┐  ┌───────────────┐  │
-│  │ Node.js v20 ARM64   │  │ .NET 10 / ASP.NET Core 10   │  │ Static Assets │  │
-│  │ (libnode.so Alpine) │  │ (libcps_dotnet_host.so)     │  │ Storage       │  │
-│  │ - nice / UV_THREADS │  │ - dlopen(libhostfxr.so)     │  │ (HTML/JS/SPA) │  │
-│  │ - --max-old-space   │  │ - SIGSYS -> -ENOSYS handler │  └───────────────┘  │
-│  │ - cps_node_preload  │  │ - DOTNET_GCHeapHardLimit    │                     │
-│  └──────────┬──────────┘  └──────────────┬──────────────┘                     │
-│             │ TCP :3306                  │ TCP :3306                          │
-│             └──────────────┬─────────────┘                                    │
-│                            ▼                                                  │
+│  └──────┬──────────────────────┬───────────────────────┬───────────────────┘  │
+│         │ /api/*               │ / o /api/*            │ / o Estáticos        │
+│         ▼                      ▼                       ▼                      │
+│  ┌──────────────────┐  ┌──────────────────────┐  ┌─────────────────────────┐  │
+│  │ Node.js v20      │  │ .NET 10 / ASP.NET    │  │ Go Nativo ARM64         │  │
+│  │ (libnode.so)     │  │ (libcps_dotnet_host) │  │ (libcps_elf_host.so)    │  │
+│  │ - --max-old-space│  │ - hostfxr_main_start │  │ - Userland ELF Loader   │  │
+│  │ - UV_THREADPOOL  │  │ - SIGSYS -> -ENOSYS  │  │ - GOMEMLIMIT / DNS / CA │  │
+│  └────────┬─────────┘  └──────────┬───────────┘  └────────────┬────────────┘  │
+│           │ TCP :3306             │ TCP :3306                 │ TCP :3306     │
+│           └───────────────────────┴───────────────────────────┘               │
+│                                   ▼                                           │
 │  ┌─────────────────────────────────────────────────────────────────────────┐  │
 │  │     EmbeddedDatabaseEngine: MariaDB 10.11 ARM64 (InnoDB Nativo)         │  │
 │  │   - Ejecución ELF nativa vía libc musl (libalpine_musl.so)              │  │
@@ -373,11 +397,12 @@ Para ingenieros y desarrolladores que quieran entender o extender el funcionamie
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Ejecución ELF Nativa sin Root ni PRoot Pesado**: tanto MariaDB (`libmariadbd.so` / `libmariadb_cli.so`), Node.js (`libnode.so`) como el host nativo `.NET` (`libcps_dotnet_host.so`) residen en `jniLibs/arm64-v8a` con `extractNativeLibs="true"` para cumplir las políticas SELinux `W^X` en Android 10–15, enlazados contra musl de Alpine 3.20 (`libalpine_musl.so`) mediante mapas de librerías (`mariadb_libs_map.txt` y `dotnet_so_map.txt`).
+- **Ejecución ELF Nativa sin Root ni PRoot Pesado**: tanto MariaDB (`libmariadbd.so` / `libmariadb_cli.so`), Node.js (`libnode.so`), el host `.NET` (`libcps_dotnet_host.so`) como el cargador ELF para Go (`libcps_elf_host.so`) residen en `jniLibs/arm64-v8a` con `extractNativeLibs="true"` para cumplir las políticas SELinux `W^X` en Android 10–15.
 - **Host Nativo .NET 10 (`cps_dotnet_host.c` → `libcps_dotnet_host.so`)**: en Android musl no permite ejecutar un binario si `/proc/self/exe` no se llama literalmente `dotnet` (`cannot execute dotnet when renamed to libalpine_musl.so`). Para resolverlo limpiamente y respetar `W^X`, un launcher C PIE carga `libhostfxr.so` con `dlopen`, invoca directamente `hostfxr_main_startupinfo` e instala un manejador de señal `SIGSYS` (`SYS_SECCOMP`) que responde `-ENOSYS` en llamadas restringidas por seccomp-bpf (`membarrier`, `clone3`, `rseq`, etc.) para que CoreCLR active su ruta segura de respaldo.
+- **Cargador ELF en Memoria para Go (`cps_elf_host.c` → `libcps_elf_host.so`)**: dado que Android 10+ bloquea `execve` sobre binarios subidos a `filesDir`, este cargador C mapea en memoria anónima (`PROT_READ|PROT_WRITE` → `mprotect` estricto sin W+X simultáneo) los segmentos `PT_LOAD` de binarios estáticos `linux/arm64` (`ET_EXEC`/`ET_DYN`), construye el stack y vector auxiliar (`AT_PHDR`, `AT_PAGESZ`, `AT_HWCAP`, `AT_RANDOM`), instala `SIGSYS -> -ENOSYS`, adapta el fallback DNS y transfiere control al entrypoint `_start`.
 - **Parcheo de DNS y TLS en `cloudflared`**: el workflow de compilación parchea `libcloudflared.so` reemplazando el fallback DNS `127.0.0.1:53` por `1.1.1.1:0053`, y `PaaSRuntimeService` genera un bundle `cacerts.pem` a partir de los certificados raíz del sistema Android para validar TLS sin errores.
 - **Preloader Node (`cps_node_preload.cjs`)**: parchea `Module._resolveFilename` y `Module.globalPaths` para compartir módulos globales y las dependencias instaladas bajo `cps_shared_node_modules`.
-- **Pipeline de Compilación Automática (`.github/workflows/build-apk.yml`)**: compila en `ubuntu-24.04` usando contenedores `alpine:3.20` + QEMU ARM64 para construir los paquetes nativos, el launcher `libcps_dotnet_host.so`, el APK debug con Gradle 8.9 (AGP 8.5 / JDK 17) y publica automáticamente el APK en Artifacts y Releases.
+- **Pipeline de Compilación Automática (`.github/workflows/build-apk.yml`)**: compila en `ubuntu-24.04` usando contenedores `alpine:3.20` + QEMU ARM64 para construir los paquetes nativos, compilar `libcps_dotnet_host.so` y `libcps_elf_host.so` (con prueba de ejecución ARM64 en QEMU), generar la APK con Gradle 8.9 (AGP 8.5 / JDK 17) y publicarla en Artifacts y Releases.
 
 ---
 
@@ -403,6 +428,7 @@ Para ingenieros y desarrolladores que quieran entender o extender el funcionamie
 ### Scripts de Empaquetado Nativo y CI/CD (`scripts/` y `.github/`)
 
 - [`scripts/cps_dotnet_host.c`](scripts/cps_dotnet_host.c): host nativo C (`libcps_dotnet_host.so`) para arrancar CoreCLR/.NET 10 en Android sin errores de `/proc/self/exe` ni `SIGSYS`.
+- [`scripts/cps_elf_host.c`](scripts/cps_elf_host.c): cargador ELF en memoria (`libcps_elf_host.so`) para ejecutar binarios Go estáticos `linux/arm64` en Android respetando SELinux W^X.
 - [`scripts/build_dotnet_alpine_arm64.sh`](scripts/build_dotnet_alpine_arm64.sh): script Alpine 3.20 ARM64 que descarga ASP.NET Core 10.0 (`linux-musl-arm64`), mapea librerías nativas y genera `dotnet_alpine_bundle.zip`.
 - [`scripts/build_mariadb_alpine_arm64.sh`](scripts/build_mariadb_alpine_arm64.sh): script Alpine 3.20 ARM64 que empaqueta `mariadbd`, `mariadb`, `node`, módulos preinstalados y datadir inicial de MariaDB.
 - [`scripts/install_on_phone_termux.sh`](scripts/install_on_phone_termux.sh), [`scripts/boot_nonroot_proot.sh`](scripts/boot_nonroot_proot.sh) y [`scripts/boot_root_native.sh`](scripts/boot_root_native.sh): scripts complementarios de entorno Termux, PRoot Debian y arranque nativo con cgroups/Docker en Root.

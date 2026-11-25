@@ -1671,7 +1671,7 @@ if (btnSaveExpertConfig) {
           type: 'success',
           title: '¡Configuración Experta Aplicada!',
           desc: `Límite de RAM por defecto: ${payload.defaultMaxRamMb} MB · Buffer InnoDB: ${payload.innoDbBufferMb} MB · Watchdog: ${payload.watchdogEnabled ? 'Activo' : 'Inactivo'}.`,
-          pill: '🧠 Tus procesos Node.js ya corren con los nuevos límites'
+          pill: '🧠 Tus procesos ya corren con los nuevos límites'
         });
       } else {
         alert(data.error || 'No se pudo guardar la configuración experta');
@@ -1880,7 +1880,8 @@ function renderResourcesTab(snapshot) {
   resourcesAppsContainer.innerHTML = apps
     .map((app) => {
       const appNameEsc = escapeResHtml(app.appName);
-      const isStatic = app.runtime === 'static';
+      const rtLower = String(app.runtime || '').toLowerCase();
+      const isStatic = rtLower === 'static' || rtLower.includes('estático') || rtLower.includes('estatico');
       const ramPct = Math.min(100, Math.max(0, Number(app.ramQuotaPct || 0)));
       const ramBarColor = getResBarColor(ramPct, false);
 
@@ -1892,12 +1893,13 @@ function renderResourcesTab(snapshot) {
         ? '<span style="background:rgba(24,144,255,0.2);color:#52a9ff;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.74rem;font-weight:800;">🌐 ESTÁTICA (PROXY CPS)</span>'
         : `<span style="background:rgba(255,77,109,0.2);color:#ff7b93;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.74rem;font-weight:800;">🟠 ${escapeResHtml(app.watchdogState || 'DETENIDA')}</span>`;
 
-      const runtimeLabel =
-        app.runtime === 'dotnet'
-          ? '.NET 10'
-          : app.runtime === 'node'
-          ? 'Node.js'
-          : 'Estático';
+      const runtimeLabel = rtLower.includes('dotnet') || rtLower.includes('.net')
+        ? '.NET 10'
+        : rtLower.includes('go')
+        ? 'Go (ARM64)'
+        : rtLower.includes('node')
+        ? 'Node.js'
+        : 'Estático';
 
       const niceLabel =
         Number(app.cpuPriorityNice || 0) === 0
@@ -2010,11 +2012,13 @@ function renderModalAppResources(snapshot) {
 
   if (resModalAppName) resModalAppName.textContent = app.appName;
   if (resModalRuntimeSubtitle) {
+    const rtLow = String(app.runtime || '').toLowerCase();
+    const isStaticModal = rtLow === 'static' || rtLow.includes('estático') || rtLow.includes('estatico');
     const statusTxt = app.paused
       ? '⏸️ Pausada'
       : app.alive
       ? `🟢 PID ${app.pid} · Uptime ${formatResUptime(app.uptimeSeconds)}`
-      : app.runtime === 'static'
+      : isStaticModal
       ? '🌐 Sitio Estático (Proxy CPS)'
       : `🟠 ${app.watchdogState || 'Detenida'}`;
     resModalRuntimeSubtitle.textContent =

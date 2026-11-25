@@ -864,7 +864,7 @@
               </div>
               <div>
                 <label for="zipRoutePath">3. Ruta Web Pública (Caddy)</label>
-                <input type="text" id="zipRoutePath" value="/" placeholder="ej: / ó /api/* ó /crm/*" />
+                <input type="text" id="zipRoutePath" value="/" placeholder="ej: / ó /api/* ó /api/v1/imagenes/*,/media/*" />
               </div>
             </div>
 
@@ -1622,13 +1622,13 @@
           </div>
           <input type="range" id="resModalRamRange" min="64" max="1536" step="64" value="256" style="min-height: 28px; padding: 0; margin-top: 0.45rem; cursor: pointer;" />
           <small style="color: var(--text-muted); font-size: 0.78rem;">
-            Se aplica al heap máximo en Node.js (<code>--max-old-space-size</code>) y en .NET 10 (<code>DOTNET_GCHeapHardLimit</code>).
+            Se aplica al heap máximo en Node.js (<code>--max-old-space-size</code>), .NET 10 (<code>DOTNET_GCHeapHardLimit</code>) y Go (<code>GOMEMLIMIT</code>).
           </small>
         </div>
 
         <div class="grid" style="margin-bottom: 0; gap: 0.75rem;">
           <div>
-            <label for="resModalCpuCoresSelect" style="margin-top: 0;">⚡ Núcleos CPU Permitidos (.NET / Threads)</label>
+            <label for="resModalCpuCoresSelect" style="margin-top: 0;">⚡ Núcleos CPU Permitidos (.NET / Go)</label>
             <select id="resModalCpuCoresSelect">
               <option value="0">Todos los núcleos del celular (Auto)</option>
               <option value="1">1 núcleo (Ahorro máximo)</option>

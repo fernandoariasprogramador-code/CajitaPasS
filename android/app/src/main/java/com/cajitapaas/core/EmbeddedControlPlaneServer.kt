@@ -222,13 +222,13 @@ class EmbeddedControlPlaneServer(
 
     /**
      * Abre un ServerSocket real en `0.0.0.0:<appPort>` (ej. 3001) y, si el proyecto contiene
-     * un Backend Node.js (`server.js` / `index.js` / `package.json`), levanta su proceso real con `libnode.so`.
+     * un Backend Node.js, .NET 10 o Go ARM64, levanta su proceso real supervisado por Watchdog.
      */
     private fun startDedicatedAppServer(appName: String, appPort: Int) {
         stopDedicatedAppServer(appName)
         intentionallyStoppedApps.remove(appName)
         appRestartCounts[appName] = 0
-        appWatchdogState[appName] = "running"
+        appWatchdogState[appName] = "starting"
         executor.execute {
             runCatching { startAppNodeProcessIfPresent(appName, appPort) }
         }
@@ -275,12 +275,23 @@ class EmbeddedControlPlaneServer(
             val dotnetEntry = findDotnetEntryAssembly(appRoot)
             if (dotnetEntry != null) {
                 startAppDotnetProcessIfPresent(appName, appPort, appRoot, dotnetEntry.first, dotnetEntry.second)
-            } else if (hasUnpublishedDotnetSource(appRoot)) {
+                return
+            }
+            val goBinary = findGoBinaryEntry(appRoot, appName)
+            if (goBinary != null) {
+                startAppGoProcessIfPresent(appName, appPort, appRoot, goBinary)
+                return
+            }
+            if (hasUnpublishedDotnetSource(appRoot)) {
+                appWatchdogState[appName] = "missing_publish"
                 appendAppLog(
                     appName,
                     "[CPS-DotNet] ⚠️ Proyecto .NET detectado (*.csproj) sin compilar. Ejecutá 'dotnet publish -c Release -o ./publish' en tu PC y subí el contenido de la carpeta 'publish/' en el .ZIP."
                 )
+                return
             }
+            val appRole = loadSavedProjects().optJSONObject(appName)?.optString("appRole", "frontend") ?: "frontend"
+            diagnoseIncompatibleAppPackage(appName, appRoot, appRole)
             return
         }
 
@@ -671,15 +682,20 @@ class EmbeddedControlPlaneServer(
         if (!baseDir.exists()) return false
         val appRoot = resolveEffectiveAppRoot(baseDir)
         val isNode = findNodeEntryScript(appRoot) != null
-        val isDotnet = if (!isNode) findDotnetEntryAssembly(appRoot) != null else false
-        if (!isNode && !isDotnet) return false
+        val isDotnet = !isNode && findDotnetEntryAssembly(appRoot) != null
+        val isGo = !isNode && !isDotnet && findGoBinaryEntry(appRoot, appName) != null
+        if (!isNode && !isDotnet && !isGo) return false
 
         val proc = appProcesses[appName]
         if (proc == null || !proc.isAlive) {
             runCatching { startAppNodeProcessIfPresent(appName, appPort) }
         }
 
-        val maxWaitSteps = if (isDotnet) 40 else 20
+        val maxWaitSteps = when {
+            isDotnet -> 45
+            isGo -> 30
+            else -> 20
+        }
         repeat(maxWaitSteps) {
             if (isLocalPortOpen(internalNodePort, 150)) return true
             if (appProcesses[appName]?.isAlive == false) return false
@@ -954,6 +970,372 @@ class EmbeddedControlPlaneServer(
         }
     }
 
+    /**
+     * Lee cabecera mínima (24 bytes) de un archivo para determinar si es ELF ARM64, ELF x86_64 o Windows PE (.exe).
+     * Devuelve `Pair(eiClass, eMachine)`:
+     * - `(2, 183)` -> ELF 64-bit ARM64 (`aarch64`)
+     * - `(2, 62)`  -> ELF 64-bit x86_64 (`amd64`)
+     * - `(-1, 0x4D5A)` -> Windows PE (`.exe` / `.dll`)
+     */
+    private fun readElfHeaderInfo(file: File): Pair<Int, Int>? {
+        if (!file.isFile || file.length() < 64L) return null
+        return runCatching {
+            val buf = ByteArray(24)
+            FileInputStream(file).use { fis ->
+                var read = 0
+                while (read < buf.size) {
+                    val r = fis.read(buf, read, buf.size - read)
+                    if (r <= 0) break
+                    read += r
+                }
+                if (read < 20) return null
+            }
+            if (buf[0] == 0x4D.toByte() && buf[1] == 0x5A.toByte()) {
+                return -1 to 0x4D5A
+            }
+            if (buf[0] == 0x7F.toByte() && buf[1] == 'E'.code.toByte() && buf[2] == 'L'.code.toByte() && buf[3] == 'F'.code.toByte()) {
+                val eiClass = buf[4].toInt() and 0xFF
+                val eType = (buf[16].toInt() and 0xFF) or ((buf[17].toInt() and 0xFF) shl 8)
+                val eMachine = (buf[18].toInt() and 0xFF) or ((buf[19].toInt() and 0xFF) shl 8)
+                if (eType == 2 || eType == 3) {
+                    return eiClass to eMachine
+                }
+            }
+            null
+        }.getOrNull()
+    }
+
+    private fun isLikelyExecutableBinaryCandidate(file: File): Boolean {
+        if (!file.isFile || file.length() < 4096L) return false
+        val nameLower = file.name.lowercase()
+        if (nameLower.endsWith(".so") || nameLower.contains(".so.")) return false
+        val ext = file.extension.lowercase()
+        val nonExecExts = setOf(
+            "dll", "exe", "js", "cjs", "mjs", "ts", "json", "html", "htm", "css", "map",
+            "png", "jpg", "jpeg", "webp", "gif", "svg", "ico", "txt", "md", "sh", "ps1",
+            "yml", "yaml", "sql", "db", "db-wal", "db-shm", "zip", "gz", "tar", "pem",
+            "crt", "key", "mod", "sum", "go", "csproj", "sln", "runtimeconfig"
+        )
+        return ext !in nonExecExts
+    }
+
+    private fun findGoBinaryEntry(appRoot: File, appName: String): File? {
+        if (!appRoot.exists()) return null
+        val slug = sanitizeSlug(appName)
+        val candidates = mutableListOf<Pair<Int, File>>()
+
+        appRoot.walkTopDown()
+            .maxDepth(4)
+            .onEnter { dir ->
+                val n = dir.name.lowercase()
+                n != "node_modules" && n != ".git" && n != "__macosx" &&
+                    n != "obj" && n != "wwwroot" && n != "data" && n != "logs" &&
+                    n != "uploads" && n != "windows-amd64" && !n.contains("amd64")
+            }
+            .forEach { file ->
+                if (!isLikelyExecutableBinaryCandidate(file)) return@forEach
+                val info = readElfHeaderInfo(file) ?: return@forEach
+                if (info.first == 2 && info.second == 183) {
+                    var score = 20
+                    val nameLower = file.name.lowercase()
+                    val pathLower = file.absolutePath.lowercase().replace('\\', '/')
+                    if (nameLower == slug || nameLower == appName.lowercase()) score += 100
+                    if (file.parentFile?.canonicalPath == appRoot.canonicalPath) score += 50
+                    if (pathLower.contains("arm64") || pathLower.contains("aarch64")) score += 45
+                    if (pathLower.contains("/publish/") || pathLower.contains("/bin/") || pathLower.contains("/dist/")) score += 20
+                    if (nameLower in setOf("server", "app", "main", "api", "media-engine")) score += 15
+                    candidates.add(score to file)
+                }
+            }
+
+        return candidates.maxByOrNull { it.first }?.second
+    }
+
+    private fun diagnoseIncompatibleAppPackage(appName: String, appRoot: File, role: String) {
+        if (!appRoot.exists()) {
+            appWatchdogState[appName] = "idle"
+            return
+        }
+
+        var hasGoMod = false
+        var hasGoSource = false
+        val incompatibleBins = mutableListOf<String>()
+
+        appRoot.walkTopDown()
+            .maxDepth(4)
+            .onEnter { dir ->
+                val n = dir.name.lowercase()
+                n != "node_modules" && n != ".git" && n != "__macosx" && n != "data"
+            }
+            .forEach { f ->
+                if (!f.isFile) return@forEach
+                val nameLower = f.name.lowercase()
+                if (nameLower == "go.mod") hasGoMod = true
+                if (f.extension.equals("go", ignoreCase = true)) hasGoSource = true
+                if (f.length() >= 4096L && !nameLower.endsWith(".dll") && !nameLower.endsWith(".so")) {
+                    val hdr = readElfHeaderInfo(f)
+                    if (hdr != null) {
+                        val rel = f.relativeToOrSelf(appRoot).path.replace('\\', '/')
+                        when {
+                            hdr.first == -1 && hdr.second == 0x4D5A -> incompatibleBins.add("$rel (Windows PE .exe)")
+                            hdr.first == 2 && hdr.second == 62 -> incompatibleBins.add("$rel (Linux x86_64 / amd64)")
+                            hdr.second == 3 -> incompatibleBins.add("$rel (Linux x86 32-bit)")
+                            hdr.second != 183 -> incompatibleBins.add("$rel (arch e_machine=${hdr.second})")
+                        }
+                    }
+                }
+            }
+
+        if (incompatibleBins.isNotEmpty() || hasGoMod || hasGoSource) {
+            appWatchdogState[appName] = "incompatible_arch"
+            val summary = if (incompatibleBins.isNotEmpty()) {
+                "Binarios detectados incompatibles con ARM64: ${incompatibleBins.take(4).joinToString(", ")}"
+            } else {
+                "Código fuente Go sin compilar (go.mod / *.go)"
+            }
+            appendAppLog(appName, "[CPS-Go] ❌ $summary.")
+            appendAppLog(
+                appName,
+                "[CPS-Go] 🛠️ Este celular usa CPU ARM64. Compilá de forma estática en tu PC con:\n" +
+                    "  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags \"purego,nodynamic\" -trimpath -ldflags=\"-s -w\" -o ${sanitizeSlug(appName)} ./cmd/server"
+            )
+            appendAppLog(appName, "[CPS-Go] 📦 Luego comprimí el binario ARM64 (junto a .env si usás uno) en un .ZIP y volvé a subirlo.")
+            return
+        }
+
+        if (role == "backend") {
+            appWatchdogState[appName] = "no_runtime"
+            appendAppLog(
+                appName,
+                "[CPS-Runtime] ⚠️ No se encontró punto de entrada ejecutable para '$appName' (Node.js: server.js/package.json · .NET: *.runtimeconfig.json+*.dll · Go: binario ELF linux/arm64)."
+            )
+        } else {
+            appWatchdogState[appName] = "static"
+        }
+    }
+
+    private fun ensureCaBundleFile(): File? {
+        val bundleFile = File(context.filesDir, "cacerts.pem")
+        if (bundleFile.exists() && bundleFile.length() > 10_000L) {
+            return bundleFile
+        }
+        return runCatching {
+            val certDirs = listOf(
+                File("/apex/com.android.conscrypt/cacerts"),
+                File("/system/etc/security/cacerts")
+            )
+            bundleFile.bufferedWriter().use { writer ->
+                for (dir in certDirs) {
+                    if (dir.exists() && dir.isDirectory) {
+                        val files = dir.listFiles() ?: emptyArray()
+                        if (files.isNotEmpty()) {
+                            for (f in files) {
+                                if (f.isFile && f.canRead()) {
+                                    writer.write(f.readText())
+                                    writer.write("\n")
+                                }
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+            if (bundleFile.length() > 0L) bundleFile else null
+        }.getOrNull()
+    }
+
+    private fun adaptAndroidCompatiblePath(rawValue: String, workDir: File): String? {
+        val trimmed = rawValue.trim()
+        val linuxContainerPrefixes = listOf("/var/lib/", "/opt/", "/srv/")
+        if (linuxContainerPrefixes.none { trimmed.startsWith(it) }) return null
+        val dataDir = File(workDir, "data").apply { mkdirs() }
+        val fileName = trimmed.substringAfterLast('/')
+        return if (fileName.contains('.')) {
+            File(dataDir, fileName).absolutePath
+        } else {
+            dataDir.absolutePath
+        }
+    }
+
+    /**
+     * Inicia un binario nativo Go (`GOOS=linux GOARCH=arm64 CGO_ENABLED=0`) mediante `libcps_elf_host.so`,
+     * cargando sus segmentos ELF de forma compatible con SELinux W^X en Android 10–15 e inyectando
+     * puerto interno, `GOMEMLIMIT`, `GOMAXPROCS`, `.env`/`.env.production`, certificados TLS y Watchdog.
+     */
+    @Synchronized
+    private fun startAppGoProcessIfPresent(
+        appName: String,
+        appPort: Int,
+        appRoot: File,
+        binaryFile: File
+    ) {
+        val internalPort = appPort + 10000
+        val existingProc = appProcesses[appName]
+        if (existingProc != null && existingProc.isAlive && isLocalPortOpen(internalPort, 150)) {
+            return
+        }
+
+        val elfHostBin = File(context.applicationInfo.nativeLibraryDir, "libcps_elf_host.so")
+        if (!elfHostBin.exists()) {
+            appWatchdogState[appName] = "error_runtime"
+            appendAppLog(appName, "[CPS-Go] ❌ El cargador nativo ARM64 (libcps_elf_host.so) no está empaquetado en esta APK.")
+            Log.w(TAG, "Binario libcps_elf_host.so no disponible para iniciar '$appName'")
+            return
+        }
+
+        runCatching { Os.chmod(elfHostBin.absolutePath, 493) }
+        val workDir = binaryFile.parentFile ?: appRoot
+
+        val projects = loadSavedProjects()
+        val appConfig = projects.optJSONObject(appName)
+        val appMaxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb()).coerceIn(64, 2048)
+        val cpuCoresLimit = (appConfig?.optInt("cpuCoresLimit", 0) ?: 0).coerceIn(0, Runtime.getRuntime().availableProcessors())
+        val cpuPriorityNice = (appConfig?.optInt("cpuPriorityNice", 0) ?: 0).coerceIn(0, 19)
+
+        val baseArgs = listOf(elfHostBin.absolutePath)
+        val args = if (cpuPriorityNice > 0 && File("/system/bin/nice").exists()) {
+            listOf("/system/bin/nice", "-n", cpuPriorityNice.toString()) + baseArgs
+        } else {
+            baseArgs
+        }
+
+        val pb = ProcessBuilder(args)
+            .directory(workDir)
+            .redirectErrorStream(true)
+
+        val env = pb.environment()
+        // Cargar primero .env.production y luego .env (para que .env tenga prioridad)
+        val envCandidates = listOf(
+            File(appRoot, ".env.production"),
+            File(workDir, ".env.production"),
+            File(appRoot, ".env"),
+            File(workDir, ".env")
+        ).distinctBy { it.canonicalPath }
+        for (candidateEnv in envCandidates) {
+            if (candidateEnv.exists() && candidateEnv.isFile) {
+                runCatching {
+                    candidateEnv.readLines(Charsets.UTF_8).forEach { rawLine ->
+                        val trimmed = rawLine.trim()
+                        if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                            val k = trimmed.substringBefore("=").trim()
+                            val v = trimmed.substringAfter("=").trim().trim('"', '\'')
+                            if (k.isNotEmpty()) env[k] = v
+                        }
+                    }
+                }
+            }
+        }
+
+        // Adaptar rutas Linux tipo /var/lib/... hacia la carpeta escribible ./data del proyecto en Android
+        for (pathKey in listOf("STORAGE_LOCAL_PATH", "DB_SQLITE_PATH", "DATA_DIR", "UPLOAD_DIR", "SQLITE_PATH", "LOG_DIR")) {
+            val rawPathVal = env[pathKey] ?: continue
+            val adapted = adaptAndroidCompatiblePath(rawPathVal, workDir)
+            if (adapted != null) {
+                env[pathKey] = adapted
+                appendAppLog(appName, "[CPS-Go] 📁 Ruta '$pathKey' ('$rawPathVal') adaptada automáticamente a almacenamiento Android: '$adapted'")
+            }
+        }
+
+        val projectDb = appConfig?.optString("dbName")?.takeIf { it.isNotBlank() }
+            ?: appConfig?.optString("database")?.takeIf { it.isNotBlank() }
+        val envDb = env["DB_NAME"]?.takeIf { it.isNotBlank() }
+            ?: env["DB_DATABASE"]?.takeIf { it.isNotBlank() }
+            ?: env["DATABASE"]?.takeIf { it.isNotBlank() }
+        val effectiveDb = envDb ?: projectDb ?: EmbeddedDatabaseEngine.DEFAULT_DB_NAME
+        if (effectiveDb != EmbeddedDatabaseEngine.DEFAULT_DB_NAME) {
+            runCatching { dbEngine.createDatabase(effectiveDb, null, null) }
+        }
+
+        val dbUser = dbEngine.getDbUser()
+        val dbPass = dbEngine.getDbPassword()
+
+        env["CPS_ELF_APP_PATH"] = binaryFile.absolutePath
+        env["CPS_GO_PATCH_DNS"] = "1"
+        env["CPS_APP_NAME"] = appName
+        env["CPS_INTERNAL_PORT"] = internalPort.toString()
+        env["PORT"] = internalPort.toString()
+        env["APP_PORT"] = internalPort.toString()
+        env["SERVER_PORT"] = internalPort.toString()
+        env["HTTP_PORT"] = internalPort.toString()
+        env["GOMEMLIMIT"] = "${appMaxRamMb}MiB"
+        if (cpuCoresLimit > 0) {
+            env["GOMAXPROCS"] = cpuCoresLimit.toString()
+        }
+        env["HOME"] = workDir.absolutePath
+        env["TMPDIR"] = context.cacheDir.absolutePath
+        ensureCaBundleFile()?.let { ca ->
+            env["SSL_CERT_FILE"] = ca.absolutePath
+        }
+
+        if (env["DB_HOST"].isNullOrBlank() || env["DB_HOST"] == "localhost") env["DB_HOST"] = "127.0.0.1"
+        if (env["DB_PORT"].isNullOrBlank()) env["DB_PORT"] = "3306"
+        if (env["DB_USER"].isNullOrBlank() || env["DB_USER"] == "root") env["DB_USER"] = dbUser
+        if (env["DB_PASS"].isNullOrBlank()) env["DB_PASS"] = dbPass
+        if (env["DB_PASSWORD"].isNullOrBlank()) env["DB_PASSWORD"] = dbPass
+        env["DB_NAME"] = effectiveDb
+        if (env["DATABASE_URL"].isNullOrBlank()) {
+            env["DATABASE_URL"] = "mysql://$dbUser:$dbPass@127.0.0.1:3306/$effectiveDb"
+        }
+
+        appProcesses.remove(appName)?.let { runCatching { it.destroyForcibly() } }
+        appCpuSamples.remove(appName)
+        val startTimestamp = System.currentTimeMillis()
+        appStartTimes[appName] = startTimestamp
+        val proc = pb.start()
+        appProcesses[appName] = proc
+        appWatchdogState[appName] = "running"
+        appendAppLog(
+            appName,
+            "[CPS-Go] 🚀 Iniciando '${binaryFile.name}' (Go ARM64 · Puerto :$appPort -> Interno :$internalPort · GOMEMLIMIT=${appMaxRamMb}MiB)"
+        )
+        Log.i(TAG, "Proceso Go iniciado para '$appName' (${binaryFile.absolutePath}) en puerto interno $internalPort")
+
+        thread(name = "CPS-GoLog-$appName", isDaemon = true) {
+            runCatching {
+                proc.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        if (line.isNotBlank()) {
+                            appendAppLog(appName, line)
+                        }
+                        Log.i(TAG, "[Go:$appName] $line")
+                    }
+                }
+            }
+            val exitCode = runCatching { proc.waitFor() }.getOrDefault(-1)
+            if (isRunning && !intentionallyStoppedApps.contains(appName) && appProcesses[appName] === proc) {
+                if (exitCode == 126) {
+                    appWatchdogState[appName] = "incompatible_binary"
+                    appendAppLog(appName, "[CPS-Go] 🛑 El binario no pudo ejecutarse (código 126). Revisá las instrucciones arriba en esta consola.")
+                    return@thread
+                }
+                val uptimeMs = System.currentTimeMillis() - startTimestamp
+                if (uptimeMs > 60_000L) {
+                    appRestartCounts[appName] = 0
+                }
+                if (isWatchdogEnabled()) {
+                    val crashes = (appRestartCounts[appName] ?: 0) + 1
+                    appRestartCounts[appName] = crashes
+                    val maxRestarts = getWatchdogMaxRestarts()
+                    if (crashes <= maxRestarts) {
+                        val backoffSec = minOf(25, crashes * 3)
+                        appWatchdogState[appName] = "restarting ($crashes/$maxRestarts)"
+                        appendAppLog(appName, "[CPS-Watchdog] ⚠️ Proceso Go terminado inesperadamente (código $exitCode). Auto-reiniciando en ${backoffSec}s (intento $crashes/$maxRestarts)...")
+                        runCatching { Thread.sleep(backoffSec * 1000L) }
+                        if (isRunning && !intentionallyStoppedApps.contains(appName)) {
+                            runCatching { startAppGoProcessIfPresent(appName, appPort, appRoot, binaryFile) }
+                        }
+                    } else {
+                        appWatchdogState[appName] = "crash_loop"
+                        appendAppLog(appName, "[CPS-Watchdog] 🛑 Auto-reinicio Go pausado tras $maxRestarts fallos consecutivos. Revisá la consola y Variables .env.")
+                    }
+                } else {
+                    appWatchdogState[appName] = "exited ($exitCode)"
+                    appendAppLog(appName, "[CPS-Go] Proceso finalizado (código $exitCode). Watchdog desactivado.")
+                }
+            }
+        }
+    }
+
     private fun findNodeEntryScript(appRoot: File): File? {
         val pkgFile = File(appRoot, "package.json")
         if (pkgFile.exists() && pkgFile.isFile) {
@@ -1001,7 +1383,15 @@ class EmbeddedControlPlaneServer(
 
     private fun resolveEffectiveAppRoot(baseDir: File): File {
         if (!baseDir.exists()) return baseDir
-        if (File(baseDir, "package.json").exists() || File(baseDir, "server.js").exists() || File(baseDir, "index.js").exists() || File(baseDir, "index.html").exists()) {
+        if (File(baseDir, "package.json").exists() ||
+            File(baseDir, "server.js").exists() ||
+            File(baseDir, "index.js").exists() ||
+            File(baseDir, "index.html").exists() ||
+            File(baseDir, "go.mod").exists() ||
+            File(baseDir, ".env").exists() ||
+            File(baseDir, ".env.production").exists() ||
+            baseDir.listFiles()?.any { isLikelyExecutableBinaryCandidate(it) && readElfHeaderInfo(it) != null } == true
+        ) {
             return baseDir
         }
         val children = baseDir.listFiles()?.filter { !it.name.startsWith(".") && it.name != "__MACOSX" } ?: emptyList()
@@ -1031,7 +1421,7 @@ class EmbeddedControlPlaneServer(
 
     private fun handleDedicatedAppClient(appName: String, appPort: Int, socket: Socket) {
         socket.use { client ->
-            client.soTimeout = 30_000
+            client.soTimeout = 60_000
             val input = BufferedInputStream(client.getInputStream(), 16 * 1024)
             val out = client.getOutputStream()
 
@@ -1061,7 +1451,7 @@ class EmbeddedControlPlaneServer(
             }
 
             val bodyBytes = if (contentLength > 0L) {
-                readFixedBytes(input, contentLength.coerceAtMost(10L * 1024L * 1024L).toInt())
+                readFixedBytes(input, contentLength.coerceAtMost(30L * 1024L * 1024L).toInt())
             } else ByteArray(0)
 
             val internalNodePort = appPort + 10000
@@ -1118,7 +1508,7 @@ class EmbeddedControlPlaneServer(
     ): Boolean {
         return try {
             Socket().use { backend ->
-                backend.soTimeout = 30_000
+                backend.soTimeout = 60_000
                 backend.connect(InetSocketAddress("127.0.0.1", internalNodePort), 1000)
                 val bOut = backend.getOutputStream()
                 val bIn = BufferedInputStream(backend.getInputStream(), 16 * 1024)
@@ -1140,7 +1530,33 @@ class EmbeddedControlPlaneServer(
                 bOut.flush()
 
                 val statusLine = readHeaderLine(bIn) ?: return false
-                if (statusLine.contains(" 404 ") && allowPrefixRetry) {
+                val respHeaders = mutableListOf<String>()
+                var hasCors = false
+                while (true) {
+                    val line = readHeaderLine(bIn) ?: break
+                    if (line.isEmpty()) break
+                    if (line.lowercase().startsWith("access-control-allow-origin:")) {
+                        hasCors = true
+                    }
+                    respHeaders.add(line)
+                }
+
+                if (statusLine.contains(" 404 ")) {
+                    if (!allowPrefixRetry) {
+                        return false
+                    }
+
+                    val bodyCap = 256 * 1024
+                    val buffered404 = ByteArrayOutputStream()
+                    val drainBuf = ByteArray(8 * 1024)
+                    while (true) {
+                        val r = bIn.read(drainBuf)
+                        if (r == -1) break
+                        if (buffered404.size() < bodyCap) {
+                            buffered404.write(drainBuf, 0, minOf(r, bodyCap - buffered404.size()))
+                        }
+                    }
+
                     val altUri = if (fullUri.startsWith("/api/")) {
                         fullUri.removePrefix("/api").ifEmpty { "/" }
                     } else if (fullUri == "/api") {
@@ -1153,25 +1569,36 @@ class EmbeddedControlPlaneServer(
                         internalNodePort, method, altUri, altRawPath, headerLines, bodyBytes, appName, appPort, clientOut, allowPrefixRetry = false
                     )
                     if (retried) return true
-                }
 
-                if (statusLine.contains(" 404 ") && !allowPrefixRetry) {
                     if (rawPath == "/api/status" || rawPath == "/status" || rawPath == "/health" || rawPath == "/api/health") {
                         sendAppStatusJson(appName, appPort, clientOut)
                         return true
                     }
-                    return false
-                }
 
-                val respHeaders = mutableListOf<String>()
-                var hasCors = false
-                while (true) {
-                    val line = readHeaderLine(bIn) ?: break
-                    if (line.isEmpty()) break
-                    if (line.lowercase().startsWith("access-control-allow-origin:")) {
-                        hasCors = true
+                    val role = loadSavedProjects().optJSONObject(appName)?.optString("appRole", "frontend") ?: "frontend"
+                    if (role != "backend" && !rawPath.startsWith("/api/")) {
+                        return false
                     }
-                    respHeaders.add(line)
+
+                    val outHeader = buildString {
+                        append(statusLine).append("\r\n")
+                        for (h in respHeaders) {
+                            append(h).append("\r\n")
+                        }
+                        if (!hasCors) {
+                            append("Access-Control-Allow-Origin: *\r\n")
+                            append("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n")
+                            append("Access-Control-Allow-Headers: *\r\n")
+                        }
+                        append("\r\n")
+                    }
+                    clientOut.write(outHeader.toByteArray(Charsets.ISO_8859_1))
+                    val raw404Bytes = buffered404.toByteArray()
+                    if (raw404Bytes.isNotEmpty()) {
+                        clientOut.write(raw404Bytes)
+                    }
+                    clientOut.flush()
+                    return true
                 }
 
                 val outHeader = buildString {
@@ -1219,27 +1646,56 @@ class EmbeddedControlPlaneServer(
             path.startsWith("/api/v1/resources/")
     }
 
+    private fun detectRuntimeLabel(appRoot: File, appName: String): String {
+        return when {
+            findDotnetEntryAssembly(appRoot) != null -> ".NET 10 ARM64"
+            findNodeEntryScript(appRoot) != null -> "Node.js v20 ARM64"
+            findGoBinaryEntry(appRoot, appName) != null -> "Go Native ARM64"
+            else -> "Estático / HTML"
+        }
+    }
+
     private fun sendAppStatusJson(appName: String, appPort: Int, out: OutputStream) {
         val internalNodePort = appPort + 10000
-        val nodeActive = isLocalPortOpen(internalNodePort, 150)
+        val procAlive = appProcesses[appName]?.isAlive == true
+        val portOpen = isLocalPortOpen(internalNodePort, 150)
+        val runtimeActive = procAlive || portOpen
+
         val appConfig = loadSavedProjects().optJSONObject(appName)
+        val role = appConfig?.optString("appRole", "frontend") ?: "frontend"
+        val appRoot = resolveEffectiveAppRoot(File(deployedAppsBaseDir, appName))
+        val runtimeLabel = detectRuntimeLabel(appRoot, appName)
+        val isStaticOnly = (role == "frontend" && runtimeLabel == "Estático / HTML")
+        val healthy = runtimeActive || isStaticOnly
+        val statusCode = if (healthy) 200 else 503
+
         val maxRamMb = (appConfig?.optInt("maxRamMb", 0)?.takeIf { it >= 64 } ?: getDefaultMaxRamMb())
+        val wdState = appWatchdogState[appName] ?: if (runtimeActive) "running" else if (isStaticOnly) "static" else "offline"
+        val lastLog = appNodeLogs[appName] ?: if (isStaticOnly) "Sitio estático listo" else "Sin salida de consola todavía"
+        val msg = if (healthy) {
+            "API '$appName' ($runtimeLabel) activa en CajitaPaaS (Puerto :$appPort)"
+        } else {
+            "El servicio backend '$appName' ($runtimeLabel) no está corriendo en :$appPort (estado: $wdState). Revisá la Consola en Vivo en el Panel Web."
+        }
+
         val json = JSONObject()
-            .put("status", "online")
-            .put("healthy", true)
+            .put("status", if (healthy) "online" else "offline")
+            .put("healthy", healthy)
             .put("app", appName)
             .put("port", appPort)
+            .put("runtime", runtimeLabel)
             .put("mariadbConnected", dbEngine.isDaemonHealthy())
             .put("dbEngine", "MariaDB Alpine ARM64 (InnoDB)")
             .put("dbHost", "127.0.0.1")
             .put("dbPort", EmbeddedDatabaseEngine.STANDARD_PORT)
-            .put("nodeRuntimeActive", nodeActive)
+            .put("nodeRuntimeActive", runtimeActive)
+            .put("runtimeActive", runtimeActive)
             .put("maxRamMb", maxRamMb)
             .put("restartCount", appRestartCounts[appName] ?: 0)
-            .put("watchdogState", appWatchdogState[appName] ?: if (nodeActive) "running" else "idle")
-            .put("lastLog", appNodeLogs[appName] ?: "Servicio listo")
-            .put("message", "API '$appName' activa y operativa en CajitaPaaS (Puerto :$appPort)")
-        sendJson(out, 200, json.toString())
+            .put("watchdogState", wdState)
+            .put("lastLog", lastLog)
+            .put("message", msg)
+        sendJson(out, statusCode, json.toString())
     }
 
     // Atiende peticiones en el puerto 8080 (Gateway local y destino del Túnel Cloudflare).
@@ -1329,7 +1785,7 @@ class EmbeddedControlPlaneServer(
                 val internalNodePort = appPort + 10000
 
                 val bodyBytes = if (contentLength > 0L) {
-                    readFixedBytes(input, contentLength.coerceAtMost(10L * 1024L * 1024L).toInt())
+                    readFixedBytes(input, contentLength.coerceAtMost(30L * 1024L * 1024L).toInt())
                 } else ByteArray(0)
 
                 if (ensureAppNodeServerReady(appName, appPort)) {
@@ -1362,19 +1818,24 @@ class EmbeddedControlPlaneServer(
         while (keys.hasNext()) {
             val appName = keys.next()
             val info = projects.optJSONObject(appName) ?: continue
-            val route = info.optString("routePath", "/").removeSuffix("*").removeSuffix("/").ifEmpty { "/" }
-            entries.add(appName to route)
+            val rawRouteField = info.optString("routePath", "/").trim()
+            val patterns = rawRouteField.split(",")
+                .map { it.trim().removeSuffix("*").removeSuffix("/").ifEmpty { "/" } }
+                .distinct()
+            for (prefix in patterns) {
+                entries.add(appName to prefix)
+            }
         }
         if (entries.isEmpty()) return null
 
-        // Priorizar rutas más específicas (ej. /api antes que /)
+        // Priorizar rutas más específicas (ej. /api/v1/imagenes antes que /api o /)
         entries.sortByDescending { if (it.second == "/") 0 else it.second.length }
         for ((appName, prefix) in entries) {
             if (prefix == "/" || requestPath == prefix || requestPath.startsWith("$prefix/")) {
                 return appName to prefix
             }
         }
-        return entries.first()
+        return null
     }
 
     /**
@@ -1424,7 +1885,7 @@ class EmbeddedControlPlaneServer(
                     <head><meta charset="UTF-8"><title>$appName · Proyecto .NET sin publicar</title></head>
                     <body style="background:#0d131a;color:#f5f9fc;font-family:system-ui,sans-serif;padding:2.5rem;max-width:720px;margin:0 auto;line-height:1.6;">
                       <h1 style="color:#ffb300;">⚠️ Proyecto .NET detectado sin compilar</h1>
-                      <p>Subiste el código fuente (<code>*.csproj</code>) de <strong>$appName</strong>, pero CajitaPaaS necesita los archivos compilados para ejecutarlo en Android con .NET 8.</p>
+                      <p>Subiste el código fuente (<code>*.csproj</code>) de <strong>$appName</strong>, pero CajitaPaaS necesita los archivos compilados para ejecutarlo en Android con .NET 10.</p>
                       <div style="background:#131c27;border:1px solid #223244;border-radius:12px;padding:1.2rem;margin:1rem 0;">
                         <strong>📦 Cómo publicarlo en 1 paso desde tu PC:</strong><br/>
                         <code style="display:block;margin-top:0.5rem;color:#00e5a3;font-size:1rem;">dotnet publish -c Release -o ./publish</code>
@@ -1434,6 +1895,27 @@ class EmbeddedControlPlaneServer(
                     </html>
                 """.trimIndent().toByteArray(Charsets.UTF_8)
                 val header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${guideHtml.size}\r\nConnection: close\r\n\r\n"
+                out.write(header.toByteArray(Charsets.UTF_8))
+                out.write(guideHtml)
+                return
+            }
+            if (findGoBinaryEntry(effectiveRoot, appName) == null && appWatchdogState[appName] in setOf("incompatible_arch", "incompatible_binary")) {
+                val guideHtml = """
+                    <!DOCTYPE html>
+                    <html lang="es">
+                    <head><meta charset="UTF-8"><title>$appName · Binario Go incompatible</title></head>
+                    <body style="background:#0d131a;color:#f5f9fc;font-family:system-ui,sans-serif;padding:2.5rem;max-width:740px;margin:0 auto;line-height:1.6;">
+                      <h1 style="color:#ffb300;">⚠️ Binario Go incompatible con Android ARM64</h1>
+                      <p>El paquete de <strong>$appName</strong> no contiene un ejecutable estático para <code>linux/arm64</code> (se encontró código fuente o binarios <code>amd64</code>/<code>.exe</code>).</p>
+                      <div style="background:#131c27;border:1px solid #223244;border-radius:12px;padding:1.2rem;margin:1rem 0;">
+                        <strong>⚙️ Cómo compilarlo en 1 paso desde tu PC:</strong><br/>
+                        <code style="display:block;margin-top:0.5rem;color:#00e5a3;font-size:0.95rem;word-break:break-all;">GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags &quot;purego,nodynamic&quot; -trimpath -ldflags=&quot;-s -w&quot; -o $appName ./cmd/server</code>
+                      </div>
+                      <p>Revisá la <strong>📜 Consola en Vivo</strong> en CajitaPaaS para ver el detalle exacto detectado.</p>
+                    </body>
+                    </html>
+                """.trimIndent().toByteArray(Charsets.UTF_8)
+                val header = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${guideHtml.size}\r\nConnection: close\r\n\r\n"
                 out.write(header.toByteArray(Charsets.UTF_8))
                 out.write(guideHtml)
                 return
@@ -2894,7 +3376,13 @@ class EmbeddedControlPlaneServer(
 
     private fun sendJson(out: OutputStream, status: Int, json: String) {
         val bytes = json.toByteArray(Charsets.UTF_8)
-        val statusText = if (status == 200) "OK" else if (status == 201) "Created" else "Error"
+        val statusText = when (status) {
+            200 -> "OK"
+            201 -> "Created"
+            404 -> "Not Found"
+            503 -> "Service Unavailable"
+            else -> "Error"
+        }
         val header = "HTTP/1.1 $status $statusText\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         out.write(header.toByteArray(Charsets.UTF_8))
         out.write(bytes)
@@ -2944,14 +3432,16 @@ class EmbeddedControlPlaneServer(
     // GESTIÓN DE ARCHIVOS .ENV Y APPSETTINGS.JSON (.NET) EN CALIENTE POR APP
     // ========================================================================
 
-    private fun findExistingEnvFile(appRoot: File): File? {
+    private fun findExistingEnvFile(appRoot: File, appName: String = ""): File? {
         val entryDir = findNodeEntryScript(appRoot)?.parentFile
             ?: findDotnetEntryAssembly(appRoot)?.second
+            ?: findGoBinaryEntry(appRoot, appName.ifEmpty { appRoot.name })?.parentFile
             ?: appRoot
         val candidates = listOf(
             File(appRoot, ".env"),
             File(entryDir, ".env"),
             File(appRoot, ".env.production"),
+            File(entryDir, ".env.production"),
             File(appRoot, ".env.local"),
             File(appRoot, ".env.example")
         )
@@ -3115,7 +3605,7 @@ class EmbeddedControlPlaneServer(
         val baseDir = File(deployedAppsBaseDir, appName)
         if (!baseDir.exists()) return map
         val appRoot = resolveEffectiveAppRoot(baseDir)
-        val envFile = findExistingEnvFile(appRoot) ?: return map
+        val envFile = findExistingEnvFile(appRoot, appName) ?: return map
         runCatching {
             envFile.readLines(Charsets.UTF_8).forEach { rawLine ->
                 val trimmed = rawLine.trim()
@@ -3135,9 +3625,10 @@ class EmbeddedControlPlaneServer(
         val appRoot = resolveEffectiveAppRoot(baseDir)
         val entryDir = findNodeEntryScript(appRoot)?.parentFile
             ?: findDotnetEntryAssembly(appRoot)?.second
+            ?: findGoBinaryEntry(appRoot, appName)?.parentFile
             ?: appRoot
         val primaryEnv = File(appRoot, ".env")
-        val existingFile = findExistingEnvFile(appRoot)
+        val existingFile = findExistingEnvFile(appRoot, appName)
 
         val currentMap = readEnvMapFromAppName(appName)
         if (currentMap.isEmpty() && existingFile == null) {
@@ -3165,7 +3656,7 @@ class EmbeddedControlPlaneServer(
 
         val isDotnet = findDotnetEntryAssembly(appRoot) != null
         val appSettingsFile = findAppSettingsFile(appRoot)
-        val envFile = findExistingEnvFile(appRoot)
+        val envFile = findExistingEnvFile(appRoot, appName)
         val hasEnvFile = envFile != null && envFile.exists()
 
         val rawEnvMap = readEnvMapFromAppName(appName)
@@ -3239,7 +3730,8 @@ class EmbeddedControlPlaneServer(
         }
         val appRoot = resolveEffectiveAppRoot(baseDir)
         val dotnetContentRoot = findDotnetEntryAssembly(appRoot)?.second
-        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: dotnetContentRoot ?: appRoot
+        val goWorkDir = findGoBinaryEntry(appRoot, appName)?.parentFile
+        val entryDir = findNodeEntryScript(appRoot)?.parentFile ?: dotnetContentRoot ?: goWorkDir ?: appRoot
         val appSettingsFile = findAppSettingsFile(appRoot)
         val isDotnet = findDotnetEntryAssembly(appRoot) != null || appSettingsFile != null
 
@@ -3938,9 +4430,11 @@ class EmbeddedControlPlaneServer(
             val appRoot = resolveEffectiveAppRoot(appDir)
             val isNode = findNodeEntryScript(appRoot) != null
             val isDotnet = !isNode && findDotnetEntryAssembly(appRoot) != null
+            val isGo = !isNode && !isDotnet && findGoBinaryEntry(appRoot, appName) != null
             val runtimeName = when {
                 isDotnet -> ".NET 10 ARM64"
                 isNode -> "Node.js v20 ARM64"
+                isGo -> "Go Native ARM64"
                 else -> "Estático / HTML"
             }
 
@@ -3958,9 +4452,9 @@ class EmbeddedControlPlaneServer(
             val diskUsedMb = Math.round((computeDirSizeBytes(appDir) / (1024.0 * 1024.0)) * 10.0) / 10.0
             appsDiskUsedSum += diskUsedMb
 
-            val ramUsedMb = if (role == "frontend" && !isNode && !isDotnet) 0.0 else procTel.rssMb
+            val ramUsedMb = if (role == "frontend" && !isNode && !isDotnet && !isGo) 0.0 else procTel.rssMb
             appsRamUsedSum += ramUsedMb
-            if (role != "frontend" || isNode || isDotnet) {
+            if (role != "frontend" || isNode || isDotnet || isGo) {
                 allocatedRamSum += maxRamMb
             }
 
