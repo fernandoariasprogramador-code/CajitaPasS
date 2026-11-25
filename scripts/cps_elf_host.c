@@ -550,15 +550,16 @@ int main(int argc, char **argv) {
 
   fflush(NULL);
 
-  uintptr_t entry_addr = (uintptr_t)ehdr.e_entry + load_bias;
+  register uintptr_t target_sp __asm__("x16") = sp_aligned;
+  register uintptr_t target_pc __asm__("x17") = (uintptr_t)ehdr.e_entry + load_bias;
   __asm__ volatile(
-      "mov sp, %0\n"
+      "mov sp, x16\n"
       "mov x0, #0\n"
       "mov x1, #0\n"
       "mov x2, #0\n"
-      "br %1\n"
+      "br x17\n"
       :
-      : "r"(sp_aligned), "r"(entry_addr)
+      : "r"(target_sp), "r"(target_pc)
       : "x0", "x1", "x2", "memory");
 
   return 126;
