@@ -9,6 +9,7 @@ Usa el rol **⚙️ Backend / API** cuando tu aplicación escucha tráfico HTTP 
 ## 1. Particularidades por Runtime
 
 ### 🟢 A. Node.js v20 (Alpine ARM64)
+
 - **Qué comprimir**: tu `package.json`, archivo de arranque (`server.js`, `index.js`, `app.js`, `main.js` o el definido en `scripts.start` / `main`), rutas, controladores y tu `.env` (opcional).
 - **⚠️ REGLA DE ORO — Nunca subas `node_modules/` en el `.zip`**:
   - Los módulos con binarios nativos compilados en Windows/Mac (`x86_64`) no funcionan en Android **ARM64**.
@@ -19,6 +20,7 @@ Usa el rol **⚙️ Backend / API** cuando tu aplicación escucha tráfico HTTP 
 ---
 
 ### 🟣 B. .NET / ASP.NET Core (6, 7, 8, 9 y 10)
+
 - **Cómo compilar antes de comprimir**:
   ```bash
   dotnet publish -c Release -o ./publish
@@ -33,7 +35,8 @@ Usa el rol **⚙️ Backend / API** cuando tu aplicación escucha tráfico HTTP 
 ---
 
 ### 🔵 C. Go Nativo (`linux/arm64` Estático)
-- **Cómo compilar en tu PC** *(el celular es ARM64 Linux — nunca subas `.exe` de Windows ni binarios `linux/amd64`)*:
+
+- **Cómo compilar en tu PC** _(el celular es ARM64 Linux — nunca subas `.exe` de Windows ni binarios `linux/amd64`)_:
   ```powershell
   # Windows PowerShell
   $env:GOOS="linux"; $env:GOARCH="arm64"; $env:CGO_ENABLED="0"
@@ -59,16 +62,17 @@ Usa el rol **⚙️ Backend / API** cuando tu aplicación escucha tráfico HTTP 
 
 Uno de los errores más frecuentes al probar una API detrás de Cloudflare es que **funcione por IP + puerto directo**, pero **falle al abrir imágenes, Swagger o rutas especiales desde Cloudflare**. Esto ocurre por cómo enruta cada puerto:
 
-| Forma de acceso | Qué atiende | Cómo enruta las peticiones |
-| :--- | :--- | :--- |
-| **Puerto directo en Wi-Fi**<br/>`http://<IP_CELULAR>:3003/...` | Servidor dedicado solo para esa app (`handleDedicatedAppClient`) | Envía **cualquier ruta** (`/api/...`, `/media/...`, `/docs/...`, `/swagger/...`) directo a tu backend. |
+| Forma de acceso                                                                       | Qué atiende                                                                  | Cómo enruta las peticiones                                                                                   |
+| :------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------- |
+| **Puerto directo en Wi-Fi**<br/>`http://<IP_CELULAR>:3003/...`                        | Servidor dedicado solo para esa app (`handleDedicatedAppClient`)             | Envía **cualquier ruta** (`/api/...`, `/media/...`, `/docs/...`, `/swagger/...`) directo a tu backend.       |
 | **Gateway LAN (`:8080`) o Túnel Cloudflare**<br/>`https://xxxx.trycloudflare.com/...` | Proxy unificado multi-app (`handleGatewayClient` → `findMatchingAppForPath`) | Solo envía a tu API las rutas que coincidan con la **Ruta Web Pública** configurada en la tarjeta de la app. |
 
 ### Cómo exponer rutas extra como `/media/*` o Swagger `/docs/*` por Cloudflare
+
 Si dejaste la ruta por defecto **`/api/*`**, las peticiones a `/media/productos/123/hd.webp` o `/docs/` **no empiezan por `/api/`**, así que el Gateway `:8080` las mandará al frontend en `/` (o devolverá `404`).
 
 - **Solución 1 — Múltiples rutas separadas por coma (si convive con un Frontend/Fullstack en `/`)**:
-  En **Ruta Web Pública** al subir o **✏️ Actualizar** la app, lista todos los prefijos que atiende tu API:
+  En el selector **Ruta Web Pública** al subir la app (o en caliente con el botón **🛣️ Ruta** de su tarjeta), elige el preset correspondiente (como `/api/*,/media/*,/docs/*`) o selecciona **✏️ Otro** para escribir todos los prefijos que atiende tu API:
   ```text
   /api/v1/imagenes/*,/api/v1/backup/*,/media/*,/docs/*
   ```
@@ -77,12 +81,15 @@ Si dejaste la ruta por defecto **`/api/*`**, las peticiones a `/media/productos/
   Si esa API es el único servicio en el celular (sin otro frontend en `/`), puedes poner `/` como ruta web pública y responderá todas las rutas por Cloudflare.
 
 ### Enlaces públicos generados por la API (`PUBLIC_BASE_URL` / `MEDIA_PUBLIC_BASE_URL`)
+
 Si tu API devuelve URLs completas en JSON (por ejemplo links de imágenes descargables), verifica en **⚙️ Variables .env**:
+
 - No dejes valores de ejemplo (`https://media.tudominio.com`) ni `http://192.168...` si los clientes consumirán el servicio por Internet: usa la URL HTTPS de tu túnel Cloudflare (`https://xxxx.trycloudflare.com` o tu dominio fijo Zero Trust).
 
 ---
 
 ## 3. Reglas sobre rutas de salida, errores HTTP y estado (`/health`)
+
 - **Swagger / raíz `/`**: muchas APIs (como microservicios Go/ASP.NET Web API) no definen una ruta `GET /`; por eso el botón **🔌 Abrir API (:3003)** puede mostrar `404` en la raíz hasta que entres al endpoint real (ej. `/docs/`, `/swagger/`, `/health`).
 - **Errores reales**: CajitaPaaS respeta los códigos HTTP `404` y `500` reales de tu backend (si una petición falla con `404`, primero reintenta quitando/agregando `/api` por compatibilidad, y si tampoco existe, reenvía el `404` original de tu API).
 - **Si el proceso está detenido o falló al arrancar**: el endpoint `/health` o `/api/status` devolverá HTTP **`503 Service Unavailable`** con `"healthy": false` y el último log de consola.
@@ -90,6 +97,7 @@ Si tu API devuelve URLs completas en JSON (por ejemplo links de imágenes descar
 ---
 
 ## 4. Base de datos, Logs y Recursos
+
 - **Base de Datos MariaDB**: asigna la base al subir el ZIP, en `.env`/`appsettings.json`, o cámbiala en caliente con **🗄️ Cambiar BD**.
 - **Consola y Watchdog**: revisa errores y reinicios automáticos en **📜 Consola** (hasta 300 líneas en vivo, con botón **📋 Copiar** y **🔄 Reiniciar App**). Si un binario Go o .NET sale con error fatal de arquitectura/empaquetado (código `126`), el Watchdog se detiene sin entrar en bucle infinito.
 - **Límites**: ajusta RAM máxima (`--max-old-space-size` / `DOTNET_GCHeapHardLimit` / `GOMEMLIMIT`), núcleos CPU (`DOTNET_PROCESSOR_COUNT` / `GOMAXPROCS`), prioridad `nice` y pausa/reanudación en **📊 Recursos**.

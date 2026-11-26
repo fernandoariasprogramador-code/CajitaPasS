@@ -123,11 +123,26 @@ function allocatePortPairForApp(appName) {
 }
 
 function sanitizeRoutePath(rawPath) {
-  const p = String(rawPath || '/').trim();
-  if (!/^\/[a-zA-Z0-9/_*-]*$/.test(p)) {
-    throw new Error('Ruta de Ingress inválida. Ejemplos válidos: /, /api/*, /ventas/*');
+  const tokens = String(rawPath || '/')
+    .split(',')
+    .map((part) => part.trim().replace(/\/{2,}/g, '/'))
+    .filter(Boolean)
+    .map((part) => (part.startsWith('/') ? part : `/${part}`));
+
+  if (tokens.length === 0) {
+    return '/';
   }
-  return p;
+
+  for (const seg of tokens) {
+    if (seg === '/_control' || seg.startsWith('/_control/')) {
+      throw new Error('La ruta /_control/* está reservada para el Panel de Control CPS.');
+    }
+    if (!/^\/[a-zA-Z0-9/_*.-]*$/.test(seg)) {
+      throw new Error(`Ruta de Ingress inválida ("${seg}"). Ejemplos válidos: /, /api/*, /api/*,/media/*`);
+    }
+  }
+
+  return Array.from(new Set(tokens)).join(',');
 }
 
 // ============================================================================
@@ -358,17 +373,25 @@ async function waitForHealthyInstance(port, healthPath = '/health', retries = 15
  * y ejecuta Zero-Downtime Reload en Caddy.
  */
 async function rebuildCaddyMultiAppConfig() {
-  const entries = Array.from(deploymentRegistry.entries()).sort((a, b) => {
-    const pathA = a[1].routePath || '/';
-    const pathB = b[1].routePath || '/';
-    if (pathA === '/') return 1;
-    if (pathB === '/') return -1;
-    return pathB.length - pathA.length;
+  const expanded = [];
+  for (const [appName, info] of deploymentRegistry.entries()) {
+    const rawRoute = info.routePath || '/';
+    const segments = rawRoute.split(',').map((s) => s.trim()).filter(Boolean);
+    for (const seg of (segments.length > 0 ? segments : ['/'])) {
+      expanded.push({ appName, info, route: seg });
+    }
+  }
+
+  expanded.sort((a, b) => {
+    const isRootA = a.route === '/' || a.route === '/*';
+    const isRootB = b.route === '/' || b.route === '/*';
+    if (isRootA && !isRootB) return 1;
+    if (!isRootA && isRootB) return -1;
+    return b.route.length - a.route.length;
   });
 
-  const routeBlocks = entries
-    .map(([appName, info]) => {
-      const route = info.routePath || '/';
+  const routeBlocks = expanded
+    .map(({ appName, info, route }) => {
       if (route === '/' || route === '/*') {
         return `    # App [${appName}] (${info.appRole || 'app'} - slot ${info.activeColor} :${info.activePort})
     handle {
@@ -671,6 +694,31 @@ app.get('/api/v1/projects', requireStrictAuth, async (_req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Cambiar la Ruta Web Pública de un proyecto ya desplegado y recargar Caddy Zero-Downtime
+ */
+app.post('/api/v1/projects/:appName/route', strictDeployLimiter, requireStrictAuth, async (req, res) => {
+  try {
+    const appName = sanitizeAppName(req.params.appName);
+    const existing = deploymentRegistry.get(appName);
+    if (!existing) {
+      return res.status(404).json({ error: `Aplicación '${appName}' no encontrada.` });
+    }
+    const defaultRoute = existing.appRole === 'backend' ? '/api/*' : '/';
+    const cleanRoute = sanitizeRoutePath(req.body?.routePath || defaultRoute);
+    existing.routePath = cleanRoute;
+    deploymentRegistry.set(appName, existing);
+    await rebuildCaddyMultiAppConfig();
+    return res.json({
+      status: 'success',
+      message: `Ruta Web Pública de '${appName}' actualizada a '${cleanRoute}'.`,
+      routePath: cleanRoute
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
 });
 
@@ -1170,7 +1218,11 @@ app.post(
   async (req, res) => {
     const zipPath = req.file?.path;
     try {
-      const appName = sanitizeAppName(req.body?.appName || 'mi-app');
+      const appName = sanitizeAppName(req.body?.appName || req.query?.appName || 'mi-app');
+      const appRole = String(req.body?.appRole || req.query?.appRole || 'frontend');
+      const routePath = String(
+        req.body?.routePath || req.query?.routePath || (appRole === 'backend' ? '/api/*' : '/')
+      );
       const healthPath = req.body?.healthPath || '/health';
 
       if (!zipPath) {
@@ -1179,6 +1231,8 @@ app.post(
 
       const result = await executeBlueGreenDeployment({
         appName,
+        appRole,
+        routePath,
         healthPath,
         sourceSetupFn: async (targetDir) => {
           const zip = new AdmZip(zipPath);

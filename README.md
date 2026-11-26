@@ -201,6 +201,7 @@ Cada aplicación activa en **🟢 Tus Apps Encendidas** cuenta con controles dir
   - Ofrece **Vista Clave = Valor** (con botón **⚡ Cargar Datos de MariaDB Local** y alta de nuevas claves) o **Modo Texto Crudo** (`.env` o JSON). Al guardar, valida sintaxis y reinicia el servicio al instante.
 - **📦 Dependencias**: auditoría e instalación bajo demanda de librerías NPM (con insignia de aviso si faltan paquetes tras subir un ZIP).
 - **🗄️ Cambiar BD**: cambia en caliente la base de datos de MariaDB a la que se conecta la app y actualiza automáticamente su configuración.
+- **🛣️ Ruta**: abre el editor de **Ruta Web Pública** con selector de presets (`/`, `/api/*`, `/api/*,/media/*,/docs/*`, `/auth/*`, etc.) y opción **✏️ Otro** para cargar rutas personalizadas (o múltiples separadas por coma) sin resubir el `.ZIP`.
 - **📊 Recursos**: abre el modal de consumo y límites individuales de la app (disponible para frontend, backend y fullstack).
 - **✏️ Actualizar**: precarga nombre, rol, ruta y base de datos en el formulario superior para desplegar una nueva versión Blue/Green (conservando sus límites de CPU/RAM/Disco previos).
 - **🛑 Apagar**: detiene y elimina el proceso de forma limpia.

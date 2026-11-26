@@ -50,6 +50,8 @@ const btnRefreshAll = document.getElementById('btnRefreshAll');
 // Elementos de Subida de Apps (.ZIP y GitHub)
 const zipAppName = document.getElementById('zipAppName');
 const zipAppRole = document.getElementById('zipAppRole');
+const zipRouteSelect = document.getElementById('zipRouteSelect');
+const zipCustomRouteWrap = document.getElementById('zipCustomRouteWrap');
 const zipRoutePath = document.getElementById('zipRoutePath');
 const zipDbName = document.getElementById('zipDbName');
 const zipFileInput = document.getElementById('zipFileInput');
@@ -59,27 +61,240 @@ const btnDeployZip = document.getElementById('btnDeployZip');
 
 const gitAppName = document.getElementById('gitAppName');
 const gitAppRole = document.getElementById('gitAppRole');
+const gitRouteSelect = document.getElementById('gitRouteSelect');
+const gitCustomRouteWrap = document.getElementById('gitCustomRouteWrap');
 const gitRoutePath = document.getElementById('gitRoutePath');
 const gitDbName = document.getElementById('gitDbName');
 const gitRepoUrl = document.getElementById('gitRepoUrl');
 const gitBranch = document.getElementById('gitBranch');
 const btnDeployGit = document.getElementById('btnDeployGit');
 
-// Auto-sugerir ruta en Caddy cuando el usuario cambia entre Frontend y Backend
-if (zipAppRole && zipRoutePath) {
-  zipAppRole.addEventListener('change', () => {
-    if (zipAppRole.value === 'frontend') zipRoutePath.value = '/';
-    else if (zipAppRole.value === 'backend') zipRoutePath.value = '/api/*';
-    else zipRoutePath.value = '/';
-  });
+const CUSTOM_ROUTE_OPTION = '__other__';
+const PUBLIC_ROUTE_PRESET_GROUPS = [
+  {
+    label: '🖥️ Web / Frontend / Sistema Completo',
+    options: [
+      { value: '/', label: '/ — Raíz principal (Frontend / Fullstack)' },
+      { value: '/app/*', label: '/app/* — Subruta Web o SPA' },
+      { value: '/web/*', label: '/web/* — Portal Web secundario' },
+      { value: '/panel/*', label: '/panel/* — Panel / Dashboard' },
+      { value: '/admin/*', label: '/admin/* — Portal Administrativo' },
+      { value: '/tienda/*', label: '/tienda/* — Tienda / Ecommerce' }
+    ]
+  },
+  {
+    label: '⚙️ Backend / API REST y Documentación',
+    options: [
+      { value: '/api/*', label: '/api/* — API REST estándar' },
+      { value: '/api/*,/media/*,/docs/*', label: '/api/*,/media/*,/docs/* — API + Media / Imágenes + Swagger' },
+      { value: '/api/*,/swagger/*', label: '/api/*,/swagger/* — API + Swagger (.NET / OpenAPI)' },
+      { value: '/api/*,/media/*', label: '/api/*,/media/* — API + Imágenes / Media' },
+      { value: '/api/*,/uploads/*', label: '/api/*,/uploads/* — API + Archivos Uploads' },
+      { value: '/api/v1/*', label: '/api/v1/* — API Versionada v1' },
+      { value: '/api/*,/health', label: '/api/*,/health — API + Healthcheck directo' }
+    ]
+  },
+  {
+    label: '🔌 Microservicios y Endpoints Específicos',
+    options: [
+      { value: '/auth/*', label: '/auth/* — Autenticación / Login / OAuth' },
+      { value: '/graphql/*', label: '/graphql/* — API GraphQL' },
+      { value: '/ws/*', label: '/ws/* — WebSockets / Tiempo real' },
+      { value: '/webhook/*', label: '/webhook/* — Webhooks / Callbacks' }
+    ]
+  }
+];
+
+function getDefaultRouteForRole(role) {
+  return role === 'backend' ? '/api/*' : '/';
 }
-if (gitAppRole && gitRoutePath) {
-  gitAppRole.addEventListener('change', () => {
-    if (gitAppRole.value === 'frontend') gitRoutePath.value = '/';
-    else if (gitAppRole.value === 'backend') gitRoutePath.value = '/api/*';
-    else gitRoutePath.value = '/';
-  });
+
+function normalizeRoutePathInput(rawValue) {
+  const trimmed = String(rawValue || '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      value: '',
+      error: 'Ingresá al menos una ruta web válida que empiece con / (ej: / ó /api/*).'
+    };
+  }
+
+  const rawTokens = trimmed.split(',').map((t) => t.trim()).filter(Boolean);
+  if (rawTokens.length === 0) {
+    return {
+      valid: false,
+      value: '',
+      error: 'Ingresá al menos una ruta web válida que empiece con / (ej: / ó /api/*).'
+    };
+  }
+
+  const normalized = [];
+  for (const token of rawTokens) {
+    let seg = token.replace(/\/{2,}/g, '/');
+    if (!seg.startsWith('/')) seg = `/${seg}`;
+    if (seg === '/_control' || seg.startsWith('/_control/')) {
+      return {
+        valid: false,
+        value: '',
+        error: 'La ruta /_control/* está reservada para el Panel Administrativo CPS.'
+      };
+    }
+    if (!/^\/[a-zA-Z0-9/_*.-]*$/.test(seg)) {
+      return {
+        valid: false,
+        value: '',
+        error: `Ruta inválida ("${seg}"). Usá letras, números, "/", "-", "_", "." o "*".`
+      };
+    }
+    if (!normalized.includes(seg)) {
+      normalized.push(seg);
+    }
+  }
+
+  return {
+    valid: true,
+    value: normalized.join(','),
+    segments: normalized
+  };
 }
+
+function populateRoutePresetSelect(selectEl) {
+  if (!selectEl) return;
+  selectEl.innerHTML = '';
+
+  for (const group of PUBLIC_ROUTE_PRESET_GROUPS) {
+    const optGroup = document.createElement('optgroup');
+    optGroup.label = group.label;
+    for (const item of group.options) {
+      const opt = document.createElement('option');
+      opt.value = item.value;
+      opt.textContent = item.label;
+      optGroup.appendChild(opt);
+    }
+    selectEl.appendChild(optGroup);
+  }
+
+  const otherOpt = document.createElement('option');
+  otherOpt.value = CUSTOM_ROUTE_OPTION;
+  otherOpt.textContent = '✏️ Otro (Cargar ruta personalizada o varias con coma...)';
+  selectEl.appendChild(otherOpt);
+}
+
+function createRouteSelectorController({
+  selectEl,
+  customWrapEl,
+  customInputEl,
+  roleSelectEl = null,
+  previewEl = null,
+  defaultRoute = '/'
+}) {
+  if (!selectEl) {
+    return {
+      setValue: () => {},
+      getValue: () => ({ valid: true, value: defaultRoute }),
+      updatePreview: () => {}
+    };
+  }
+
+  populateRoutePresetSelect(selectEl);
+
+  const presetValues = new Set();
+  for (const group of PUBLIC_ROUTE_PRESET_GROUPS) {
+    for (const item of group.options) {
+      presetValues.add(item.value);
+    }
+  }
+
+  function updatePreview(rawStr) {
+    if (!previewEl) return;
+    const text = String(rawStr || '').trim() || '/';
+    const parts = text.split(',').map((s) => s.trim()).filter(Boolean);
+    previewEl.textContent = parts.length > 0 ? parts.join('   ·   ') : '/';
+  }
+
+  function setValue(routeStr) {
+    const cleaned = String(routeStr || '').trim() || defaultRoute;
+    const norm = normalizeRoutePathInput(cleaned);
+    const canonical = norm.valid ? norm.value : cleaned;
+
+    if (presetValues.has(canonical)) {
+      selectEl.value = canonical;
+      if (customWrapEl) customWrapEl.classList.add('hidden');
+      if (customInputEl) customInputEl.value = canonical;
+      updatePreview(canonical);
+    } else {
+      selectEl.value = CUSTOM_ROUTE_OPTION;
+      if (customWrapEl) customWrapEl.classList.remove('hidden');
+      if (customInputEl) customInputEl.value = canonical;
+      updatePreview(canonical);
+    }
+  }
+
+  function getValue({ validateCustom = false } = {}) {
+    if (selectEl.value !== CUSTOM_ROUTE_OPTION) {
+      return { valid: true, value: selectEl.value };
+    }
+    const raw = customInputEl ? customInputEl.value : '';
+    const check = normalizeRoutePathInput(raw);
+    if (!check.valid) {
+      if (validateCustom) {
+        return check;
+      }
+      return { valid: true, value: defaultRoute };
+    }
+    return check;
+  }
+
+  selectEl.addEventListener('change', () => {
+    if (selectEl.value === CUSTOM_ROUTE_OPTION) {
+      if (customWrapEl) customWrapEl.classList.remove('hidden');
+      if (customInputEl) {
+        if (!customInputEl.value.trim()) {
+          customInputEl.value = roleSelectEl ? getDefaultRouteForRole(roleSelectEl.value) : defaultRoute;
+        }
+        customInputEl.focus();
+        customInputEl.select();
+        updatePreview(customInputEl.value);
+      }
+    } else {
+      if (customWrapEl) customWrapEl.classList.add('hidden');
+      if (customInputEl) customInputEl.value = selectEl.value;
+      updatePreview(selectEl.value);
+    }
+  });
+
+  if (customInputEl) {
+    customInputEl.addEventListener('input', () => {
+      updatePreview(customInputEl.value);
+    });
+  }
+
+  if (roleSelectEl) {
+    roleSelectEl.addEventListener('change', () => {
+      setValue(getDefaultRouteForRole(roleSelectEl.value));
+    });
+  }
+
+  setValue(defaultRoute);
+
+  return { setValue, getValue, updatePreview };
+}
+
+const zipRouteCtrl = createRouteSelectorController({
+  selectEl: zipRouteSelect,
+  customWrapEl: zipCustomRouteWrap,
+  customInputEl: zipRoutePath,
+  roleSelectEl: zipAppRole,
+  defaultRoute: '/'
+});
+
+const gitRouteCtrl = createRouteSelectorController({
+  selectEl: gitRouteSelect,
+  customWrapEl: gitCustomRouteWrap,
+  customInputEl: gitRoutePath,
+  roleSelectEl: gitAppRole,
+  defaultRoute: '/api/*'
+});
 
 const appsListContainer = document.getElementById('appsListContainer');
 const btnReloadProjects = document.getElementById('btnReloadProjects');
@@ -559,6 +774,20 @@ zipFileInput.addEventListener('change', () => {
   }
 });
 
+function resolveDeployRouteOrWarn(routeCtrl) {
+  const check = routeCtrl.getValue({ validateCustom: true });
+  if (!check.valid) {
+    showResultModal({
+      type: 'warning',
+      title: 'Revisá la Ruta Web Pública',
+      desc: check.error,
+      pill: 'Elegí una ruta de la lista o ingresá una válida iniciada en / (ej: /crm/*).'
+    });
+    return null;
+  }
+  return check.value;
+}
+
 // Subir archivo .ZIP a /api/deploy/zip
 btnDeployZip.addEventListener('click', async () => {
   if (isBusyDeploying) return;
@@ -581,7 +810,8 @@ btnDeployZip.addEventListener('click', async () => {
 
   const appName = formatSlug(zipAppName.value);
   const appRole = zipAppRole ? zipAppRole.value : 'frontend';
-  const routePath = zipRoutePath ? zipRoutePath.value.trim() || '/' : '/';
+  const routePath = resolveDeployRouteOrWarn(zipRouteCtrl);
+  if (!routePath) return;
   const dbName = zipDbName ? zipDbName.value.trim() : '';
   zipAppName.value = appName;
 
@@ -621,7 +851,8 @@ btnDeployGit.addEventListener('click', async () => {
 
   const appName = formatSlug(gitAppName.value);
   const appRole = gitAppRole ? gitAppRole.value : 'backend';
-  const routePath = gitRoutePath ? gitRoutePath.value.trim() || '/api/*' : '/api/*';
+  const routePath = resolveDeployRouteOrWarn(gitRouteCtrl);
+  if (!routePath) return;
   const repoUrl = gitRepoUrl.value.trim();
   const branch = gitBranch.value.trim() || 'main';
   const dbName = gitDbName ? gitDbName.value.trim() : '';
@@ -853,17 +1084,20 @@ async function loadProjects() {
       const route = slotInfo.routePath || (role === 'frontend' ? '/' : '/api/*');
       const port = slotInfo.activePort || (role === 'frontend' ? 3001 : 3004);
       const isWebFront = role === 'frontend' || role === 'fullstack';
+      const firstGatewayPrefix = route.split(',')[0].trim().replace(/\*$/, '') || '/';
       const primaryUrl = isWebFront
         ? slotInfo.gatewayUrl || `http://${lanHost}:8080`
         : slotInfo.directPortUrl || slotInfo.appUrl || `http://${lanHost}:${port}`;
       const secondaryNote = isWebFront
         ? `(También en :${port})`
-        : `(Proxy en :8080${route.replace(/\*$/, '')})`;
+        : `(Proxy en :8080${firstGatewayPrefix})`;
       const btnOpenLabel = isWebFront ? '🌐 Abrir Web (:8080)' : `🔌 Abrir API (:${port})`;
       const slotColor = (slotInfo.activeColor || (proc.name.endsWith('-blue') ? 'blue' : 'green')).toUpperCase();
       const maxRamMb = slotInfo.maxRamMb || defaultMaxRam;
       const restartCount = slotInfo.restartCount || 0;
       const missingDeps = Array.isArray(slotInfo.missingDependencies) ? slotInfo.missingDependencies : [];
+      const escApp = escapeResHtml(baseAppName);
+      const escRoute = escapeResHtml(route);
 
       const roleBadge =
         role === 'frontend'
@@ -874,7 +1108,7 @@ async function loadProjects() {
 
       const missingDepsBadge =
         missingDeps.length > 0
-          ? `<button type="button" class="btn-open-deps" data-app="${baseAppName}" style="background:rgba(255,179,0,0.2);border:1px solid var(--amber);color:#ffd54f;padding:0.15rem 0.55rem;border-radius:6px;font-size:0.74rem;font-weight:800;margin-left:0.4rem;cursor:pointer;">⚠️ Faltan ${missingDeps.length} dependencias (Autorizar)</button>`
+          ? `<button type="button" class="btn-open-deps" data-app="${escApp}" style="background:rgba(255,179,0,0.2);border:1px solid var(--amber);color:#ffd54f;padding:0.15rem 0.55rem;border-radius:6px;font-size:0.74rem;font-weight:800;margin-left:0.4rem;cursor:pointer;">⚠️ Faltan ${missingDeps.length} dependencias (Autorizar)</button>`
           : '';
 
       const item = document.createElement('div');
@@ -884,12 +1118,12 @@ async function loadProjects() {
           <span class="live-dot"></span>
           <div>
             <div class="app-item-name" style="display:flex;align-items:center;flex-wrap:wrap;gap:0.25rem;">
-              ${baseAppName} ${roleBadge} ${missingDepsBadge}
+              ${escApp} ${roleBadge} ${missingDepsBadge}
             </div>
             <div class="app-item-meta">
               URL Principal: <a href="${primaryUrl}" target="_blank" rel="noopener" style="color:var(--accent-mint);font-weight:800;font-family:monospace;">${primaryUrl}</a>
               <span style="opacity:0.8;">${secondaryNote}</span> ·
-              Ruta: <strong>${route}</strong> ·
+              Ruta: <strong>${escRoute}</strong> ·
               Slot <strong>${slotColor}</strong>
               ${role !== 'frontend' ? ` · BD: <strong style="color:var(--accent-mint); font-family:monospace;">${slotInfo.dbName || slotInfo.database || 'cajitapaas'}</strong> · RAM máx: <strong>${maxRamMb} MB</strong>${restartCount > 0 ? ` · Reinicios: <strong style="color:var(--amber);">${restartCount}</strong>` : ''}` : ''}
             </div>
@@ -909,7 +1143,7 @@ async function loadProjects() {
           <button
             type="button"
             class="btn btn-secondary btn-small btn-open-console"
-            data-app="${baseAppName}"
+            data-app="${escApp}"
             title="Ver consola y logs en vivo"
           >
             📜 Consola
@@ -917,7 +1151,7 @@ async function loadProjects() {
           <button
             type="button"
             class="btn btn-secondary btn-small btn-open-env"
-            data-app="${baseAppName}"
+            data-app="${escApp}"
             title="Editar variables de entorno .env"
           >
             ⚙️ Variables .env
@@ -925,7 +1159,7 @@ async function loadProjects() {
           <button
             type="button"
             class="btn btn-secondary btn-small btn-open-deps"
-            data-app="${baseAppName}"
+            data-app="${escApp}"
             style="${missingDeps.length > 0 ? 'border-color:var(--amber);color:#ffd54f;' : ''}"
             title="Ver o autorizar dependencias NPM"
           >
@@ -934,8 +1168,8 @@ async function loadProjects() {
           <button
             type="button"
             class="btn btn-small btn-change-db"
-            data-app="${baseAppName}"
-            data-db="${slotInfo.dbName || slotInfo.database || 'cajitapaas'}"
+            data-app="${escApp}"
+            data-db="${escapeResHtml(slotInfo.dbName || slotInfo.database || 'cajitapaas')}"
             style="background:rgba(0, 229, 163, 0.15); border: 1px solid rgba(0, 229, 163, 0.4); color: var(--accent-mint);"
           >
             🗄️ Cambiar BD
@@ -943,8 +1177,17 @@ async function loadProjects() {
           ` : ''}
           <button
             type="button"
+            class="btn btn-secondary btn-small btn-edit-route"
+            data-app="${escApp}"
+            data-route="${escRoute}"
+            title="Elegir o personalizar la Ruta Web Pública en Gateway :8080 / Cloudflare"
+          >
+            🛣️ Ruta
+          </button>
+          <button
+            type="button"
             class="btn btn-secondary btn-small btn-open-resources"
-            data-app="${baseAppName}"
+            data-app="${escApp}"
             title="Ver CPU, RAM y Disco consumido/libre y modificar límites"
           >
             📊 Recursos
@@ -952,14 +1195,14 @@ async function loadProjects() {
           <button
             type="button"
             class="btn btn-secondary btn-small btn-select-app"
-            data-app="${baseAppName}"
-            data-role="${role}"
-            data-route="${route}"
-            data-db="${slotInfo.dbName || slotInfo.database || ''}"
+            data-app="${escApp}"
+            data-role="${escapeResHtml(role)}"
+            data-route="${escRoute}"
+            data-db="${escapeResHtml(slotInfo.dbName || slotInfo.database || '')}"
           >
             ✏️ Actualizar
           </button>
-          <button type="button" class="btn btn-danger btn-small btn-stop-app" data-app="${baseAppName}">
+          <button type="button" class="btn btn-danger btn-small btn-stop-app" data-app="${escApp}">
             🛑 Apagar
           </button>
         </div>
@@ -972,12 +1215,12 @@ async function loadProjects() {
         ramRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.55rem 0.85rem;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;flex-wrap:wrap;';
         ramRow.innerHTML = `
           <div>
-            <strong style="color:var(--accent-mint);font-family:monospace;">${baseAppName}</strong>
+            <strong style="color:var(--accent-mint);font-family:monospace;">${escApp}</strong>
             <span style="font-size:0.8rem;color:var(--text-muted);margin-left:0.4rem;">(Puerto :${port})</span>
           </div>
           <div style="display:flex;align-items:center;gap:0.5rem;">
             <span style="font-size:0.82rem;color:var(--text-muted);">RAM máx:</span>
-            <select class="expert-app-ram-input" data-app="${baseAppName}" style="width:auto;min-height:38px;padding:0.35rem 0.7rem;font-size:0.88rem;">
+            <select class="expert-app-ram-input" data-app="${escApp}" style="width:auto;min-height:38px;padding:0.35rem 0.7rem;font-size:0.88rem;">
               <option value="128" ${maxRamMb === 128 ? 'selected' : ''}>128 MB</option>
               <option value="192" ${maxRamMb === 192 ? 'selected' : ''}>192 MB</option>
               <option value="256" ${maxRamMb === 256 ? 'selected' : ''}>256 MB</option>
@@ -1006,6 +1249,10 @@ async function loadProjects() {
 
     appsListContainer.querySelectorAll('.btn-open-deps').forEach((btn) => {
       btn.addEventListener('click', () => openDependenciesModal(btn.dataset.app, false));
+    });
+
+    appsListContainer.querySelectorAll('.btn-edit-route').forEach((btn) => {
+      btn.addEventListener('click', () => openRouteEditorModal(btn.dataset.app, btn.dataset.route));
     });
 
     appsListContainer.querySelectorAll('.btn-open-resources').forEach((btn) => {
@@ -1053,8 +1300,8 @@ async function loadProjects() {
         gitAppName.value = appName;
         if (zipAppRole) zipAppRole.value = role;
         if (gitAppRole) gitAppRole.value = role;
-        if (zipRoutePath) zipRoutePath.value = route;
-        if (gitRoutePath) gitRoutePath.value = route;
+        zipRouteCtrl.setValue(route);
+        gitRouteCtrl.setValue(route);
         if (zipDbName) zipDbName.value = db;
         if (gitDbName) gitDbName.value = db;
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1074,6 +1321,84 @@ async function loadProjects() {
       });
     });
   } catch (_err) {}
+}
+
+// ============================================================================
+// 6.0 MODAL DE EDICIÓN DE RUTA WEB PÚBLICA (GATEWAY :8080 / CLOUDFLARE)
+// ============================================================================
+
+const modalRouteEditor = document.getElementById('modalRouteEditor');
+const routeModalAppName = document.getElementById('routeModalAppName');
+const routeModalSelect = document.getElementById('routeModalSelect');
+const routeModalCustomWrap = document.getElementById('routeModalCustomWrap');
+const routeModalCustomInput = document.getElementById('routeModalCustomInput');
+const routeModalPreview = document.getElementById('routeModalPreview');
+const btnCloseRouteModalTop = document.getElementById('btnCloseRouteModalTop');
+const btnCancelRouteModal = document.getElementById('btnCancelRouteModal');
+const btnSaveRouteModal = document.getElementById('btnSaveRouteModal');
+
+let activeRouteModalApp = '';
+
+const routeModalCtrl = createRouteSelectorController({
+  selectEl: routeModalSelect,
+  customWrapEl: routeModalCustomWrap,
+  customInputEl: routeModalCustomInput,
+  previewEl: routeModalPreview,
+  defaultRoute: '/'
+});
+
+function openRouteEditorModal(appName, currentRoute) {
+  if (!modalRouteEditor) return;
+  activeRouteModalApp = appName || '';
+  if (routeModalAppName) routeModalAppName.textContent = activeRouteModalApp;
+  routeModalCtrl.setValue(currentRoute || '/');
+  modalRouteEditor.classList.remove('hidden');
+}
+
+function closeRouteEditorModal() {
+  if (modalRouteEditor) modalRouteEditor.classList.add('hidden');
+  activeRouteModalApp = '';
+}
+
+if (btnCloseRouteModalTop) btnCloseRouteModalTop.addEventListener('click', closeRouteEditorModal);
+if (btnCancelRouteModal) btnCancelRouteModal.addEventListener('click', closeRouteEditorModal);
+
+if (btnSaveRouteModal) {
+  btnSaveRouteModal.addEventListener('click', async () => {
+    if (!activeRouteModalApp) return;
+    const routePath = resolveDeployRouteOrWarn(routeModalCtrl);
+    if (!routePath) return;
+
+    btnSaveRouteModal.disabled = true;
+    const prevText = btnSaveRouteModal.textContent;
+    btnSaveRouteModal.textContent = '⏳ Guardando ruta...';
+    try {
+      const res = await fetch(`./api/v1/projects/${encodeURIComponent(activeRouteModalApp)}/route`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routePath })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const updatedApp = activeRouteModalApp;
+        closeRouteEditorModal();
+        loadProjects();
+        showResultModal({
+          type: 'success',
+          title: '¡Ruta Web Pública Actualizada!',
+          desc: data.message || `El servicio "${updatedApp}" ahora responde en: ${routePath}.`,
+          pill: '🛣️ Gateway :8080 y Cloudflare actualizados en vivo sin reiniciar tu app'
+        });
+      } else {
+        alert(data.error || 'No se pudo actualizar la Ruta Web Pública');
+      }
+    } catch (_err) {
+      alert('Error de conexión actualizando la Ruta Web Pública');
+    } finally {
+      btnSaveRouteModal.disabled = false;
+      btnSaveRouteModal.textContent = prevText;
+    }
+  });
 }
 
 // ============================================================================

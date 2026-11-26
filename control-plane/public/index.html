@@ -863,8 +863,18 @@
                 </select>
               </div>
               <div>
-                <label for="zipRoutePath">3. Ruta Web Pública (Caddy)</label>
-                <input type="text" id="zipRoutePath" value="/" placeholder="ej: / ó /api/* ó /api/v1/imagenes/*,/media/*" />
+                <label for="zipRouteSelect">3. Ruta Web Pública (Gateway / Caddy)</label>
+                <select id="zipRouteSelect">
+                  <option value="/" selected>/ (Raíz principal · Sitio Web / Fullstack)</option>
+                  <option value="/api/*">/api/* (Backend / API REST estándar)</option>
+                  <option value="__other__">✏️ Otro (Cargar ruta personalizada...)</option>
+                </select>
+                <div id="zipCustomRouteWrap" class="hidden" style="margin-top: 0.5rem;">
+                  <input type="text" id="zipRoutePath" value="/" placeholder="ej: /crm/* ó /api/v1/imagenes/*,/media/*,/docs/*" />
+                  <small style="color: var(--text-muted); font-size: 0.76rem; display: block; margin-top: 0.25rem;">
+                    Debe iniciar con <code>/</code>. Podés ingresar varias rutas separadas por coma (<code>,</code>).
+                  </small>
+                </div>
               </div>
             </div>
 
@@ -908,8 +918,18 @@
                 </select>
               </div>
               <div>
-                <label for="gitRoutePath">3. Ruta Web Pública (Caddy)</label>
-                <input type="text" id="gitRoutePath" value="/api/*" placeholder="ej: /api/* ó / ó /auth/*" />
+                <label for="gitRouteSelect">3. Ruta Web Pública (Gateway / Caddy)</label>
+                <select id="gitRouteSelect">
+                  <option value="/api/*" selected>/api/* (Backend / API REST estándar)</option>
+                  <option value="/">/ (Raíz principal · Sitio Web / Fullstack)</option>
+                  <option value="__other__">✏️ Otro (Cargar ruta personalizada...)</option>
+                </select>
+                <div id="gitCustomRouteWrap" class="hidden" style="margin-top: 0.5rem;">
+                  <input type="text" id="gitRoutePath" value="/api/*" placeholder="ej: /auth/* ó /api/*,/media/*,/docs/*" />
+                  <small style="color: var(--text-muted); font-size: 0.76rem; display: block; margin-top: 0.25rem;">
+                    Debe iniciar con <code>/</code>. Podés ingresar varias rutas separadas por coma (<code>,</code>).
+                  </small>
+                </div>
               </div>
             </div>
 
@@ -1685,6 +1705,54 @@
         </button>
         <button id="btnSaveResModal" type="button" class="btn btn-small" style="min-height: 46px; padding: 0.6rem 1.25rem;">
           💾 Guardar y Aplicar Recursos
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 5: EDITOR DE RUTA WEB PÚBLICA (GATEWAY :8080 / CLOUDFLARE)
+       ======================================================================== -->
+  <div id="modalRouteEditor" class="overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-box" style="max-width: 590px; text-align: left; max-height: 92vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+        <div>
+          <h2 class="modal-title" style="font-size: 1.32rem; margin-bottom: 0.15rem;">
+            🛣️ Ruta Web Pública · <span id="routeModalAppName" style="color: var(--accent-mint);">mi-app</span>
+          </h2>
+          <div id="routeModalSubtitle" style="font-size: 0.83rem; color: var(--text-muted);">
+            Elegí cómo accede el Gateway (:8080) y Cloudflare a este servicio.
+          </div>
+        </div>
+        <button id="btnCloseRouteModalTop" type="button" class="btn btn-secondary btn-small">✕ Cerrar</button>
+      </div>
+
+      <label for="routeModalSelect">Seleccionar Ruta Web Pública</label>
+      <select id="routeModalSelect">
+        <option value="/">/ (Raíz principal · Sitio Web / Fullstack)</option>
+        <option value="/api/*">/api/* (Backend / API REST estándar)</option>
+        <option value="__other__">✏️ Otro (Cargar ruta personalizada...)</option>
+      </select>
+
+      <div id="routeModalCustomWrap" class="hidden" style="margin-top: 0.65rem;">
+        <label for="routeModalCustomInput" style="margin-top: 0;">Ruta personalizada (una o varias separadas por coma)</label>
+        <input type="text" id="routeModalCustomInput" placeholder="ej: /api/v1/imagenes/*,/api/v1/backup/*,/media/*,/docs/*" />
+        <small style="color: var(--text-muted); font-size: 0.78rem; display: block; margin-top: 0.3rem;">
+          💡 Si tu backend sirve imágenes o Swagger fuera de <code>/api</code>, combiná prefijos separados por coma (ej: <code>/api/*,/media/*,/docs/*</code>). No uses <code>/_control</code>.
+        </small>
+      </div>
+
+      <div style="margin-top: 0.85rem; padding: 0.75rem 0.9rem; border-radius: 10px; background: var(--bg-input); border: 1px solid var(--border); font-size: 0.82rem; color: var(--text-muted);">
+        📌 <strong>Rutas activas en Gateway (:8080 / Túnel Cloudflare):</strong>
+        <div id="routeModalPreview" style="margin-top: 0.3rem; color: var(--accent-mint); font-family: monospace; word-break: break-all;">/</div>
+      </div>
+
+      <div style="margin-top: 1.25rem; display: flex; gap: 0.65rem; justify-content: flex-end; flex-wrap: wrap;">
+        <button id="btnCancelRouteModal" type="button" class="btn btn-secondary btn-small">
+          Cancelar
+        </button>
+        <button id="btnSaveRouteModal" type="button" class="btn btn-small" style="min-height: 46px; padding: 0.6rem 1.25rem;">
+          💾 Guardar Ruta Web Pública
         </button>
       </div>
     </div>

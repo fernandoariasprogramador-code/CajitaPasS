@@ -1881,6 +1881,58 @@ class EmbeddedControlPlaneServer(
     }
 
     /**
+     * Normaliza una o varias rutas públicas separadas por comas (ej. "/api/*,/media/*,/docs/*").
+     * Rechaza la ruta reservada "/_control" o segmentos inválidos.
+     */
+    private fun normalizeRoutePathList(rawRouteField: String, defaultRoute: String = "/"): String {
+        val tokens = rawRouteField.split(",")
+            .map { it.trim().replace(Regex("/+"), "/") }
+            .filter { it.isNotEmpty() }
+            .map { if (it.startsWith("/")) it else "/$it" }
+
+        if (tokens.isEmpty()) return defaultRoute
+
+        val cleanList = mutableListOf<String>()
+        for (seg in tokens) {
+            if (seg == "/_control" || seg.startsWith("/_control/")) {
+                throw IllegalArgumentException("La ruta /_control/* está reservada para el Panel de Control CPS.")
+            }
+            if (!Regex("^/[a-zA-Z0-9/_*.-]*$").matches(seg)) {
+                throw IllegalArgumentException("Ruta web inválida ('$seg'). Usá prefijos como /, /api/* o /media/*.")
+            }
+            if (!cleanList.contains(seg)) {
+                cleanList.add(seg)
+            }
+        }
+        return cleanList.joinToString(",")
+    }
+
+    /**
+     * Extrae el prefijo principal utilizable como URL o ruta base de Gateway cuando hay múltiples rutas separadas por comas.
+     */
+    private fun extractPrimaryRoutePrefix(
+        rawRouteField: String,
+        defaultPrefix: String = "/",
+        preferApiPrefix: Boolean = false
+    ): String {
+        val tokens = rawRouteField.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return defaultPrefix
+
+        val chosen = if (preferApiPrefix) {
+            tokens.firstOrNull { it.startsWith("/api", ignoreCase = true) }
+                ?: tokens.firstOrNull { it != "/" && it != "/*" }
+                ?: tokens.first()
+        } else {
+            tokens.first()
+        }
+
+        val cleaned = chosen.removeSuffix("*").removeSuffix("/")
+        return if (cleaned.isEmpty()) "/" else if (cleaned.startsWith("/")) cleaned else "/$cleaned"
+    }
+
+    /**
      * Sirve los archivos reales extraídos del `.ZIP` de la aplicación `appName`
      * o responde a las rutas de estado (`/api/status`, `/status`, `/health`, `/api/health`).
      */
@@ -2020,7 +2072,11 @@ class EmbeddedControlPlaneServer(
             val info = projects.optJSONObject(k) ?: continue
             if (info.optString("appRole") == "backend") {
                 backendPort = info.optInt("activePort", 3001)
-                backendRoute = info.optString("routePath", "/api/*").removeSuffix("*").removeSuffix("/").ifEmpty { "/api" }
+                backendRoute = extractPrimaryRoutePrefix(
+                    info.optString("routePath", "/api/*"),
+                    defaultPrefix = "/api",
+                    preferApiPrefix = true
+                )
                 break
             }
         }
@@ -2551,7 +2607,7 @@ class EmbeddedControlPlaneServer(
                 val info = projectsObj.optJSONObject(appName) ?: continue
                 val appRole = info.optString("appRole", "frontend")
                 val appPort = info.optInt("activePort", 3001)
-                val cleanRoute = info.optString("routePath", "/").removeSuffix("*")
+                val cleanRoute = extractPrimaryRoutePrefix(info.optString("routePath", "/"), "/")
 
                 val primaryUrl = if (appRole == "frontend" || appRole == "fullstack") {
                     "http://$lanIp:$GATEWAY_PORT$cleanRoute"
@@ -2749,6 +2805,52 @@ class EmbeddedControlPlaneServer(
             return sendJson(out, 400, JSONObject().put("error", "No se encontró el servicio o nombre de base inválido").toString())
         }
 
+        if (path.startsWith("/api/v1/projects/") && path.endsWith("/route") && method == "POST") {
+            val rawName = path.removePrefix("/api/v1/projects/").removeSuffix("/route").trim('/')
+            val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+            val projectsObj = loadSavedProjects()
+            val appInfo = projectsObj.optJSONObject(appName)
+                ?: return sendJson(out, 404, JSONObject().put("error", "Aplicación '$appName' no encontrada.").toString())
+
+            val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
+            val rawRoute = json.optString("routePath", "").trim()
+            val appRole = appInfo.optString("appRole", "frontend")
+            val defaultRoute = if (appRole == "backend") "/api/*" else "/"
+            val normalizedRoute = try {
+                normalizeRoutePathList(rawRoute, defaultRoute)
+            } catch (e: IllegalArgumentException) {
+                return sendJson(out, 400, JSONObject().put("error", e.message ?: "Ruta web pública inválida.").toString())
+            }
+
+            val lanIp = getDeviceLanIp()
+            val candidatePort = appInfo.optInt("activePort", 3001)
+            val cleanRoute = extractPrimaryRoutePrefix(normalizedRoute, "/")
+            val primaryUrl = if (appRole == "frontend" || appRole == "fullstack") {
+                "http://$lanIp:$GATEWAY_PORT$cleanRoute"
+            } else {
+                "http://$lanIp:$candidatePort"
+            }
+
+            appInfo.put("routePath", normalizedRoute)
+            appInfo.put("appUrl", primaryUrl)
+            appInfo.put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT$cleanRoute")
+            projectsObj.put(appName, appInfo)
+            saveProjects(projectsObj)
+
+            appendAppLog(appName, "[CPS-Route] 🛣️ Ruta Web Pública actualizada a '$normalizedRoute' (Gateway :$GATEWAY_PORT).")
+            return sendJson(
+                out,
+                200,
+                JSONObject()
+                    .put("status", "success")
+                    .put("message", "Ruta Web Pública de '$appName' actualizada a '$normalizedRoute'.")
+                    .put("routePath", normalizedRoute)
+                    .put("appUrl", primaryUrl)
+                    .put("gatewayUrl", "http://$lanIp:$GATEWAY_PORT$cleanRoute")
+                    .toString()
+            )
+        }
+
         if (path.startsWith("/api/v1/projects/") && method == "DELETE") {
             val rawName = path.removePrefix("/api/v1/projects/").trim()
             val appName = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
@@ -2939,20 +3041,27 @@ class EmbeddedControlPlaneServer(
         if ((path == "/api/deploy/zip" || path == "/api/v1/deploy/zip" || path == "/api/v1/deploy/git") && method == "POST") {
             val appName: String
             val appRole: String
-            val routePath: String
+            val rawRoutePath: String
             val dbName: String
 
             if (path.endsWith("/git")) {
                 val json = runCatching { JSONObject(body) }.getOrNull() ?: JSONObject()
                 appName = sanitizeSlug(json.optString("appName", queryParams["appName"] ?: "mi-app"))
                 appRole = json.optString("appRole", queryParams["appRole"] ?: "backend")
-                routePath = json.optString("routePath", queryParams["routePath"] ?: if (appRole == "frontend") "/" else "/api/*")
+                rawRoutePath = json.optString("routePath", queryParams["routePath"] ?: if (appRole == "frontend") "/" else "/api/*")
                 dbName = json.optString("dbName", json.optString("database", queryParams["dbName"] ?: "")).trim()
             } else {
                 appName = sanitizeSlug(queryParams["appName"] ?: extractMultipartField(body, "appName") ?: "mi-app")
                 appRole = queryParams["appRole"] ?: extractMultipartField(body, "appRole") ?: "frontend"
-                routePath = queryParams["routePath"] ?: extractMultipartField(body, "routePath") ?: "/"
+                rawRoutePath = queryParams["routePath"] ?: extractMultipartField(body, "routePath") ?: "/"
                 dbName = (queryParams["dbName"] ?: queryParams["database"] ?: extractMultipartField(body, "dbName") ?: extractMultipartField(body, "database") ?: "").trim()
+            }
+
+            val defaultRoleRoute = if (appRole == "backend") "/api/*" else "/"
+            val routePath = try {
+                normalizeRoutePathList(rawRoutePath, defaultRoleRoute)
+            } catch (e: IllegalArgumentException) {
+                return sendJson(out, 400, JSONObject().put("error", e.message ?: "Ruta web pública inválida.").toString())
             }
 
             val projectsObj = loadSavedProjects()
@@ -3010,7 +3119,7 @@ class EmbeddedControlPlaneServer(
                 ?: envVarsFromZip["DATABASE"]?.takeIf { it.isNotBlank() }
 
             val lanIp = getDeviceLanIp()
-            val cleanRoute = routePath.removeSuffix("*")
+            val cleanRoute = extractPrimaryRoutePrefix(routePath, "/")
             val primaryUrl = if (appRole == "frontend" || appRole == "fullstack") {
                 "http://$lanIp:$GATEWAY_PORT$cleanRoute"
             } else {

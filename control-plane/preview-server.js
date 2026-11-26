@@ -221,6 +221,31 @@ const server = http.createServer((req, res) => {
     );
   }
 
+  if (url.pathname.startsWith('/api/v1/projects/') && url.pathname.endsWith('/route') && req.method === 'POST') {
+    const parts = url.pathname.split('/');
+    const appName = decodeURIComponent(parts[4] || '');
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const payload = JSON.parse(body || '{}');
+      const nextRoute = String(payload.routePath || '').trim() || '/';
+      if (!activeSlots[appName]) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: `Aplicación '${appName}' no encontrada.` }));
+      }
+      activeSlots[appName].routePath = nextRoute;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: 'success',
+          message: `Ruta Web Pública de '${appName}' actualizada a '${nextRoute}'.`,
+          routePath: nextRoute
+        })
+      );
+    });
+    return;
+  }
+
   if (url.pathname.startsWith('/api/v1/projects/') && req.method === 'DELETE') {
     const appName = decodeURIComponent(url.pathname.split('/').pop());
     pm2Processes = pm2Processes.filter((p) => !p.name.startsWith(appName));
