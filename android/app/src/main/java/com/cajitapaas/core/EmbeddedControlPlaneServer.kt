@@ -1880,10 +1880,8 @@ class EmbeddedControlPlaneServer(
         return null
     }
 
-    /**
-     * Normaliza una o varias rutas públicas separadas por comas (ej. "/api/*,/media/*,/docs/*").
-     * Rechaza la ruta reservada "/_control" o segmentos inválidos.
-     */
+    // Normaliza una o varias rutas públicas separadas por comas (ej. /api/*, /media/*, /docs/*).
+    // Rechaza la ruta reservada /_control o segmentos inválidos.
     private fun normalizeRoutePathList(rawRouteField: String, defaultRoute: String = "/"): String {
         val tokens = rawRouteField.split(",")
             .map { it.trim().replace(Regex("/+"), "/") }
