@@ -76,21 +76,30 @@ Tienes **dos opciones** para descargar el instalador en tu teléfono Android ARM
 ## 🚀 Guía Rápida de Uso
 
 1. **Instala la APK** en tu teléfono Android (permite la instalación desde fuentes desconocidas si el sistema lo solicita).
-6. **Abre la app `CPS`**: acepta la exención de optimización de batería y el permiso de notificaciones para que el servidor corra estable en segundo plano; dentro de la app se abrirá el Panel Web integrado (`127.0.0.1:4000`).
-7. **Crea tu contraseña maestra de administrador**: en el primer ingreso, define la contraseña que protegerá el Panel de Control (incluye selector visual para mostrar/ocultar contraseña).
-8. **Accede desde tu PC o navegador externo**: entra a `http://<IP_DE_TU_CELULAR>:4000` (el panel te muestra tu IP local y también expone la URL remota bajo `/_control/` si activas el túnel público).
-9. **Despliega y administra**: sube tus proyectos `.zip` y gestiona apps, variables de entorno, dependencias, bases de datos, túnel y recursos desde las 4 pestañas del panel.
+2. **Abre la app `CPS`**: acepta la exención de optimización de batería y el permiso de notificaciones para que el servidor corra estable en segundo plano; dentro de la app se abrirá el Panel Web integrado (`127.0.0.1:4000`).
+3. **Crea tu contraseña maestra de administrador**: en el primer ingreso, define la contraseña que protegerá el Panel de Control (incluye selector visual para mostrar/ocultar contraseña).
+4. **Accede desde tu PC o navegador externo**: entra a `http://<IP_DE_TU_CELULAR>:4000` (el panel te muestra tu IP local y también expone la URL remota bajo `/_control/` si activas el túnel público).
+5. **Despliega y administra**: sube tus proyectos `.zip` y gestiona apps, variables de entorno, dependencias, bases de datos, túnel y recursos desde las 4 pestañas del panel.
 
 ---
-
 
 ## 📦 Cómo Empaquetar y Desplegar tus Proyectos
 
 En la pestaña **🚀 1. Subir o Actualizar mis Apps** puedes desplegar tantos servicios como necesites eligiendo su identificador, rol, ruta pública en el Gateway (`/` o `/api/*`, `/crm/*`, etc.) y base de datos asociada:
 
 - 🖥️ **Frontend**: sitios HTML/CSS/JS o compilaciones React, Vue, Vite o Angular (`dist/` o `build/`).
-- ⚙️ **Backend / API**: APIs REST o microservicios en **Node.js** o **.NET / ASP.NET Core**.
-- 🚀 **Sistema Completo (Fullstack)**: aplicaciones que sirven vistas/estáticos y lógica de servidor en un mismo proyecto (por ejemplo, **ASP.NET Core MVC / Razor** o **Node.js + `public/`**).
+- ⚙️ **Backend / API**: APIs REST o microservicios en **Node.js**, **.NET / ASP.NET Core** o **Go (`linux/arm64`)**.
+- 🚀 **Sistema Completo (Fullstack)**: aplicaciones que sirven vistas/estáticos y lógica de servidor en un mismo proyecto (por ejemplo, **ASP.NET Core MVC / Razor**, **Node.js + `public/`** o **binario Go con assets embebidos/locales**).
+
+### 📚 Guías Detalladas por Tipo de Servicio
+
+Cada rol tiene particularidades distintas al compilar, comprimir el `.ZIP`, definir la **Ruta Web Pública** del Gateway y configurar variables de entorno. Consulta la hoja específica según lo que quieras subir:
+
+| Rol en CajitaPaaS | Guía Paso a Paso | Qué cubre en detalle |
+| :--- | :--- | :--- |
+| 🖥️ **Frontend** | [`docs/guia-frontend.md`](docs/guia-frontend.md) | `dist/` / `build/`, exclusión de `node_modules/`, fallback SPA, proxy `/api/...`, puente automático contra `localhost` (CORS) y despliegue Blue/Green. |
+| ⚙️ **Backend / API** | [`docs/guia-backend-api.md`](docs/guia-backend-api.md) | Empaquetado para **Node.js**, **.NET** (`appsettings.json` / roll-forward) y **Go `linux/arm64`**, puerto directo vs Gateway `:8080` / Cloudflare (múltiples rutas como `/media/*` o `/docs/*`), `PUBLIC_BASE_URL` / `MEDIA_PUBLIC_BASE_URL` y Watchdog. |
+| 🚀 **Sistema Completo** | [`docs/guia-sistema-completo.md`](docs/guia-sistema-completo.md) | Proyectos fullstack en `.NET MVC/Razor/Blazor`, `Node.js + public/` y Go; convivencia de `/` con APIs auxiliares, `ForwardedHeaders` / Antiforgery tras Cloudflare HTTPS, MariaDB y límites de recursos. |
 
 > [!NOTE]
 > El formulario **Subir App o Sistema en `.ZIP`** acepta paquetes de hasta **100 MB** y detecta automáticamente subcarpetas raíz únicas (por ejemplo si comprimiste la carpeta en lugar de solo su contenido). En la **APK Android embebida**, el código real de producción se sube mediante **`.ZIP`** (la tarjeta de GitHub está orientada al Control Plane Node.js PC/Termux con `simple-git`; en Android actúa solo como registro base si no hay archivos cargados).
@@ -109,7 +118,6 @@ En la pestaña **🚀 1. Subir o Actualizar mis Apps** puedes desplegar tantos s
 
 > [!WARNING]
 >
->
 > ### ⚠️ REGLA DE ORO: ¡NUNCA INCLUYAS `node_modules` EN EL `.ZIP`!
 >
 > 4. **Incompatibilidad de arquitectura**: los binarios nativos compilados en Windows/Mac (`x86_64`) fallarán en el procesador **ARM64** de Android.
@@ -125,16 +133,13 @@ En la pestaña **🚀 1. Subir o Actualizar mis Apps** puedes desplegar tantos s
 | **Validación & HTTP**          | `express-validator`, `http-errors`, `axios`, `multer`, `dotenv`                       |
 | **Autenticación & Utilidades** | `jsonwebtoken`, `bcryptjs`, alias `bcrypt` _(apunta a `bcryptjs` en JS puro)_, `uuid` |
 
-
 #### ➕ ¿Y si tu proyecto usa otras librerías de NPM (`zod`, `socket.io`, `dayjs`, etc.)?
-
 
 1. Al subir tu `.zip`, el servidor inspecciona `package.json` y detecta qué dependencias faltan respecto a los módulos integrados y al **Almacén Compartido (`cps_shared_node_modules`)**.
 2. En el modal **📦 Dependencias**, puedes tocar **"✅ Autorizar e Instalar"** o **instalar paquetes adicionales por nombre** uno a uno directamente desde `registry.npmjs.org`.
 3. Al finalizar, tu aplicación se reinicia automáticamente con los nuevos módulos disponibles.
 
 ---
-
 
 ### 3. Desplegar un Proyecto .NET / ASP.NET Core (6, 7, 8, 9 o 10)
 
@@ -190,7 +195,7 @@ El panel administrativo está dividido en **4 pestañas principales** y **modale
 Cada aplicación activa en **🟢 Tus Apps Encendidas** cuenta con controles directos:
 
 - **🌐 Abrir Web / 🔌 Abrir API**: abre la URL principal del servicio según su rol.
-- **📜 Consola en Vivo**: terminal en tiempo real (Node.js, .NET 10, mensajes `[CPS-Watchdog]` y `[CPS-Seccomp]`) con barra de estado, contador de reinicios, **🔄 Reiniciar App**, **🧹 Limpiar** y **📋 Copiar** (con copia al portapapeles compatible tanto en HTTPS como en HTTP/WebView).
+- **📜 Consola en Vivo**: terminal en tiempo real (Node.js, .NET 10, Go ARM64, mensajes `[CPS-Go]`, `[CPS-Watchdog]` y `[CPS-Seccomp]`) con barra de estado, contador de reinicios, **🔄 Reiniciar App**, **🧹 Limpiar** y **📋 Copiar** (con copia al portapapeles compatible tanto en HTTPS como en HTTP/WebView).
 - **⚙️ Variables `.env` / `appsettings.json`**:
   - Detecta automáticamente si el proyecto usa `.env` (Node.js) o **`appsettings.json` / `appsettings.Production.json` (.NET)**, **soportando formato JSONC** (comentarios `//`, `/* ... */` y comas finales generadas por Visual Studio).
   - Ofrece **Vista Clave = Valor** (con botón **⚡ Cargar Datos de MariaDB Local** y alta de nuevas claves) o **Modo Texto Crudo** (`.env` o JSON). Al guardar, valida sintaxis y reinicia el servicio al instante.
@@ -289,7 +294,6 @@ app.listen(PORT, "0.0.0.0", () => {
 
 Permite sortear CGNAT de redes móviles o Wi-Fi sin abrir puertos del router:
 
-
 - **Interruptor Túnel Público / Solo Red Local**: apaga la exposición pública en 1 clic si prefieres trabajar solo dentro de tu LAN.
 - **⚡ Opción 1 — Túnel Rápido Gratis (`*.trycloudflare.com`)**: genera automáticamente una URL HTTPS pública al iniciar (con botón para regenerar un nuevo enlace en 1 clic).
 - **🔒 Opción 2 — Dominio Fijo con Cloudflare Zero Trust**:
@@ -298,26 +302,20 @@ Permite sortear CGNAT de redes móviles o Wi-Fi sin abrir puertos del router:
   3. Pega tu dominio y Token (`eyJhIjoi...`), selecciona el protocolo (**`HTTP/2` recomendado en Android/móviles** o **`QUIC`**) y guarda.
 - **🩺 Diagnóstico y Logs de Cloudflared en Vivo**: muestra el estado real de conexión (`Registered tunnel connection`), errores detallados si los hubiera y botón **📋 Copiar Logs**.
 
-
 #### 📡 Supervivencia de Red Wi-Fi (Failover a Hotspot / Failback Root)
 
-
 Pensado para teléfonos que funcionan como mini-servidores 24/7 en comercios u hogares:
-
 
 - **Detección reactiva**: escucha cambios de conectividad Wi-Fi (`ConnectivityManager.NetworkCallback`) con ventana anti-rebote de 5 segundos.
 - **Failover automático (vía Root)**: si el router se apaga o cae la señal Wi-Fi, el celular activa automáticamente su **Zona Wi-Fi (Hotspot)** de emergencia para mantener vivos los servicios en la red local.
 - **Failback en Modo Ciego (Single-Radio)**: en dispositivos de una sola antena Wi-Fi (como Moto G8) que no pueden emitir Hotspot y buscar router a la vez, puedes configurar intervalos de sondeo (**5, 10, 15 o 30 minutos**): apaga el Hotspot durante una ventana de **30 segundos**, comprueba si volvió el router y se reconecta automáticamente.
 - **Badge en tiempo real**: indica en vivo si la radio está en modo normal (`STA`), en modo emergencia (`SoftAP`) o sondeando router.
 
-
 ### 4️⃣ Pestaña **📊 4. Recursos (CPU / RAM / Disco) y Modal por App**
-
 
 Tanto desde esta pestaña (actualizada en vivo cada 2 segundos) como desde el botón **📊 Recursos** de cualquier app, puedes inspeccionar y modificar el uso de hardware en tiempo real:
 
 #### Telemetría en Vivo (Consumo Real vs. Libre)
-
 
 | Ámbito              | Métricas Medibles en Tiempo Real                                                                                                                                       |
 | :------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -327,8 +325,8 @@ Tanto desde esta pestaña (actualizada en vivo cada 2 segundos) como desde el bo
 
 #### Controles para Agregar o Quitar Recursos por App (`#modalAppResources`)
 
-- **🧠 RAM Máxima (`maxRamMb`)**: slider y botones rápidos **`-64 MB` / `+64 MB`** (`64 MB` a `2048 MB`; aplicado a `--max-old-space-size` en Node.js y `DOTNET_GCHeapHardLimit` en .NET 10).
-- **⚡ Límite de Núcleos CPU (`cpuCoresLimit`)**: limita `DOTNET_PROCESSOR_COUNT` desde `1` núcleo hasta todos los núcleos disponibles (`Auto`).
+- **🧠 RAM Máxima (`maxRamMb`)**: slider y botones rápidos **`-64 MB` / `+64 MB`** (`64 MB` a `2048 MB`; aplicado a `--max-old-space-size` en Node.js, `DOTNET_GCHeapHardLimit` en .NET 10 y `GOMEMLIMIT` en Go ARM64).
+- **⚡ Límite de Núcleos CPU (`cpuCoresLimit`)**: limita `DOTNET_PROCESSOR_COUNT` y `GOMAXPROCS` desde `1` núcleo hasta todos los núcleos disponibles (`Auto`).
 - **🔋 Prioridad CPU Linux (`cpuPriorityNice`)**: ajusta la prioridad del proceso mediante `/system/bin/nice -n <0..15>` (`Normal 0`, `Moderada 5`, `Baja 10`, `Mínima 15`).
 - **🧵 Hilos Worker I/O (`workerThreads`)**: ajusta `UV_THREADPOOL_SIZE` en Node.js (`2`, `4`, `8` o `16` hilos).
 - **💾 Cuota Máxima de Disco (`maxDiskMb`)**: cuota de referencia (`Sin tope fijo`, `100 MB`, `250 MB`, `500 MB`, `1024 MB`, `2048 MB`) para visualizar espacio libre en cuota.
@@ -340,12 +338,22 @@ Tanto desde esta pestaña (actualizada en vivo cada 2 segundos) como desde el bo
 
 Cuando tus aplicaciones están encendidas, **CPS** organiza los puertos en tu red local Wi-Fi y en el Túnel Público de Cloudflare:
 
-| Servicio / Rol                 | Puerto en Red Local (Wi-Fi)                                  | Ruta en Túnel Público (`https://...`)                 | Descripción                                                                                             |
-| :----------------------------- | :----------------------------------------------------------  | :------------------------------------                 | :-----------------------------------------------------------------------------------------------        |
-| **🎨 Frontend / Fullstack**    | **`:8080`** _(y **`:80`** automático en Android con Root)_   | `/` _(Raíz del enlace)_                               | Sirve tu interfaz web, SPA compilada o sistema Fullstack.                                               |
-| **⚙️ Backend / API**           | **`:3001`**, **`:3003`**, etc. _(y proxy en `:8080/api/`)_   | `/api/*` _(o ruta configurada)_                       | Cada backend escucha en un puerto dedicado en la LAN y queda unificado bajo `/api/` en `:8080`.         |
-| **🛠️ Panel de Control CPS**    | **`:4000`**                                                  | `/_control/`                                          | Panel administrativo protegido por contraseña maestra y token de sesión.                                |
-| **🗄️ Base de Datos MariaDB**   | **`:3306`** y **`:13306`** _(puente hacia `:13307` interno)_ | _Solo Red Local (LAN)_                                | Acceso directo SQL para DBeaver/MySQL Workbench (cuando Modo PC está activo) y backends locales.        |
+| Servicio / Rol               | Puerto en Red Local (Wi-Fi)                                  | Ruta en Túnel Público (`https://...`) | Descripción                                                                                      |
+| :--------------------------- | :----------------------------------------------------------- | :------------------------------------ | :----------------------------------------------------------------------------------------------- |
+| **🎨 Frontend / Fullstack**  | **`:8080`** _(y **`:80`** automático en Android con Root)_   | `/` _(Raíz del enlace)_               | Sirve tu interfaz web, SPA compilada o sistema Fullstack.                                        |
+| **⚙️ Backend / API**         | **`:3001`**, **`:3003`**, etc. _(y proxy en `:8080/api/`)_   | `/api/*` _(o rutas configuradas)_     | Cada backend escucha en un puerto dedicado en la LAN y queda enrutado en `:8080` según su **Ruta Web Pública**. |
+| **🛠️ Panel de Control CPS**  | **`:4000`**                                                  | `/_control/`                          | Panel administrativo protegido por contraseña maestra y token de sesión.                         |
+| **🗄️ Base de Datos MariaDB** | **`:3306`** y **`:13306`** _(puente hacia `:13307` interno)_ | _Solo Red Local (LAN)_                | Acceso directo SQL para DBeaver/MySQL Workbench (cuando Modo PC está activo) y backends locales. |
+
+### 🌐 Diferencia entre Puerto Directo (`IP:Puerto`) y Gateway `:8080` / Túnel Cloudflare
+
+Es común que una API funcione al abrir **`http://<IP-DEL-TELEFONO>:<PUERTO>`** en tu red Wi-Fi (por ejemplo una imagen `/media/...` o Swagger en `/docs/`), pero **falle o no cargue al entrar desde el enlace público HTTPS de Cloudflare**:
+
+1. **Puerto directo (`http://<IP>:<PUERTO>`)**: reenvía **el 100 % de las rutas** directamente al backend que escucha en ese puerto (`/api/...`, `/media/...`, `/docs/...`, `/health`, etc.).
+2. **Túnel Cloudflare (`https://...trycloudflare.com`) y Gateway `:8080`**: Cloudflare apunta únicamente al Gateway `:8080`, el cual decide a qué app enviar cada petición comparándola contra la **Ruta Web Pública** configurada (priorizando siempre el prefijo más largo y derivando a `/` lo que no coincida).
+3. **Múltiples rutas públicas por coma (`,`)**: si tu backend expone endpoints fuera de `/api`, agrega todos sus prefijos separados por comas en **Ruta Web Pública** al crear o editar la app (por ejemplo: `/api/v1/imagenes/*,/api/v1/backup/*,/media/*,/docs/*` o `/api,/media,/docs`).
+4. **URL base pública en `.env` (`PUBLIC_BASE_URL` / `MEDIA_PUBLIC_BASE_URL`)**: si tu API devuelve URLs absolutas en sus respuestas JSON (por ejemplo apuntando por defecto a `http://localhost:3003`), desde Internet fallarán aunque la ruta `/media/*` esté habilitada. Cambia esa variable en **Variables `.env`** a tu URL HTTPS pública del túnel Cloudflare (`https://...trycloudflare.com`) y reinicia el servicio.
+5. **Respuestas `404` y `503`**: cuando el Gateway reenvía a tu API, preserva los `404` reales emitidos por tu backend; si el servicio está detenido o iniciándose en Watchdog, devuelve estado `503` con el último log. Para más ejemplos paso a paso, consulta [`docs/guia-backend-api.md`](docs/guia-backend-api.md).
 
 ### 🔗 ¿Cómo conectar tu Frontend con tu Backend sin problemas de CORS?
 
@@ -408,7 +416,6 @@ Para ingenieros y desarrolladores que quieran entender o extender el funcionamie
 
 ## 📁 Estructura del Código Fuente
 
-
 ### Aplicación Android Nativa (`android/`)
 
 - [`android/app/build.gradle.kts`](android/app/build.gradle.kts): configuración de SDK (`compileSdk 34`, `minSdk 28`, `targetSdk 34`), filtro `arm64-v8a` y `useLegacyPackaging` para librerías nativas.
@@ -425,6 +432,12 @@ Para ingenieros y desarrolladores que quieran entender o extender el funcionamie
 - [`control-plane/public/index.html`](control-plane/public/index.html) y [`control-plane/public/app.js`](control-plane/public/app.js): interfaz completa (login/setup, 4 pestañas, consola en vivo, editor `.env`/`appsettings.json`, gestor NPM, DBeaver/SQL, Cloudflare Tunnel, Supervivencia Wi-Fi, Monitor de Recursos y modal por app).
 - [`control-plane/server.js`](control-plane/server.js) y [`control-plane/preview-server.js`](control-plane/preview-server.js): servidor Control Plane en Node.js (con `pm2`, `simple-git`, `express`, `mysql2`) y servidor local de vista previa UI en PC.
 
+### Guías de Despliegue por Rol (`docs/`)
+
+- [`docs/guia-frontend.md`](docs/guia-frontend.md): guía dedicada para aplicaciones **Frontend** (build estático/SPA, detección automática de carpetas, CORS y puente `/api`).
+- [`docs/guia-backend-api.md`](docs/guia-backend-api.md): guía dedicada para **Backend / API** en Node.js, .NET 10 y Go `linux/arm64` (incluyendo rutas múltiples por coma en Gateway `:8080` / Cloudflare, `PUBLIC_BASE_URL` y Watchdog).
+- [`docs/guia-sistema-completo.md`](docs/guia-sistema-completo.md): guía dedicada para **Sistema Completo (Fullstack)** (`.NET MVC/Razor/Blazor`, `Node.js + public/`, Go, Cloudflare HTTPS y MariaDB).
+
 ### Scripts de Empaquetado Nativo y CI/CD (`scripts/` y `.github/`)
 
 - [`scripts/cps_dotnet_host.c`](scripts/cps_dotnet_host.c): host nativo C (`libcps_dotnet_host.so`) para arrancar CoreCLR/.NET 10 en Android sin errores de `/proc/self/exe` ni `SIGSYS`.
@@ -432,7 +445,7 @@ Para ingenieros y desarrolladores que quieran entender o extender el funcionamie
 - [`scripts/build_dotnet_alpine_arm64.sh`](scripts/build_dotnet_alpine_arm64.sh): script Alpine 3.20 ARM64 que descarga ASP.NET Core 10.0 (`linux-musl-arm64`), mapea librerías nativas y genera `dotnet_alpine_bundle.zip`.
 - [`scripts/build_mariadb_alpine_arm64.sh`](scripts/build_mariadb_alpine_arm64.sh): script Alpine 3.20 ARM64 que empaqueta `mariadbd`, `mariadb`, `node`, módulos preinstalados y datadir inicial de MariaDB.
 - [`scripts/install_on_phone_termux.sh`](scripts/install_on_phone_termux.sh), [`scripts/boot_nonroot_proot.sh`](scripts/boot_nonroot_proot.sh) y [`scripts/boot_root_native.sh`](scripts/boot_root_native.sh): scripts complementarios de entorno Termux, PRoot Debian y arranque nativo con cgroups/Docker en Root.
-- [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml): workflow de GitHub Actions que construye los runtimes ARM64, compila `libcps_dotnet_host.so` vía QEMU y genera/publica la APK automáticamente.
+- [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml): workflow de GitHub Actions que construye los runtimes ARM64, compila `libcps_dotnet_host.so` y `libcps_elf_host.so` vía QEMU y genera/publica la APK automáticamente.
 
 ---
 
